@@ -69,8 +69,8 @@ JSON
 
 cd "$ROOT"
 composer update --no-install --no-interaction --no-plugins --no-scripts --no-audit -q
-"$FC_ROOT/bin/fast-composer" refresh >/dev/null
-"$FC_ROOT/bin/fast-composer" require acme/fixture:dev-B --no-install --no-interaction --no-plugins --no-scripts --no-audit -q
+php "$FC_ROOT/bin/fast-composer" refresh >/dev/null
+php "$FC_ROOT/bin/fast-composer" require acme/fixture:dev-B --no-install --no-interaction --no-plugins --no-scripts --no-audit -q
 
 php -r '
 $l=json_decode(file_get_contents("composer.lock"),true);
@@ -135,10 +135,10 @@ fi
 
 echo "standard-composer-install-accepted-corrupt-metadata: OBSERVED"
 
-# This is the regression expectation. Current MVP only checks SHA reachability, so this should fail
-# until fast-composer validates metadata from the exact changed SHA against the lock entry.
+# Regression expectation: fast-composer must reject a reachable SHA whose locked metadata
+# does not match composer.json at that exact SHA.
 set +e
-"$FC_ROOT/bin/fast-composer" verify >/tmp/fast-composer-verify.log 2>&1
+php "$FC_ROOT/bin/fast-composer" verify >/tmp/fast-composer-verify.log 2>&1
 VERIFY_CODE=$?
 set -e
 cat /tmp/fast-composer-verify.log
