@@ -32,6 +32,7 @@ jobs:
       - run: composer install --no-interaction --prefer-dist
       - run: bash tests/safety-contract.sh
       - run: bash tests/ci-verifier-contract.sh
+      - run: bash tests/runtime-contract.sh
   global-install:
     runs-on: ubuntu-24.04
     steps:
