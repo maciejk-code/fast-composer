@@ -67,8 +67,8 @@ final class Application
                 return 0;
             }
 
-            // Installation is deliberately not accelerated. A committed lock is always installed
-            // by standard Composer, preserving Composer as the final install authority.
+            // Installation is deliberately never accelerated. Standard Composer remains the
+            // authority for materializing a committed lock file.
             if ($cmd === 'install') {
                 return $this->delegateComposer($args, $root);
             }
@@ -78,17 +78,18 @@ final class Application
                 return 2;
             }
 
-            // These modes either do not solve dependencies or can intentionally rewrite root
-            // constraints in ways Fast Composer does not mirror yet. Preserve exact Composer behavior.
+            // These modes intentionally have semantics beyond an optimistic lock update. Preserve
+            // exact Composer behavior rather than partially emulating them.
             if (($cmd === 'require' && $this->hasFlag($args, '--no-update'))
                 || ($cmd === 'update' && ($this->hasFlag($args, '--lock') || $this->hasFlag($args, '--bump-after-update')))) {
                 return $this->delegateComposer($args, $root);
             }
 
+            $solveArgs = $this->lockOnlyArgs($args);
             $state = $snapshot->load();
             if (!$state || !$snapshot->isCompatible($state, $rootCfg)) {
-                fwrite(STDOUT, "[fast-composer] priming snapshot with regular Composer\n");
-                $code = $this->delegateComposer($args, $root);
+                fwrite(STDOUT, "[fast-composer] priming snapshot with regular Composer (lock only)\n");
+                $code = $this->delegateComposer($solveArgs, $root);
                 if ($code !== 0) {
                     return $code;
                 }
@@ -102,9 +103,7 @@ final class Application
             } else {
                 $targets = $this->packageArguments(array_slice($args, 1));
                 if ($targets === []) {
-                    // Mutable dev branches explicitly required by the root are never hidden behind
-                    // the global TTL. This covers a branch added manually to composer.json followed
-                    // by a plain `fast-composer update`.
+                    // Explicit mutable refs are always revalidated, regardless of the broad TTL.
                     $devCount = $this->refreshExplicitDevRequirements($snapshot, $state, $rootCfg);
                     if ($devCount > 0) {
                         printf("[fast-composer] revalidated %d explicit dev branch refs\n", $devCount);
@@ -122,11 +121,12 @@ final class Application
                 }
             }
 
-            return $this->runFastComposer($snapshot, $state, $rootCfg, $args, $root);
+            return $this->runFastComposer($snapshot, $state, $rootCfg, $solveArgs, $root);
         } catch (\Throwable $e) {
             fwrite(STDERR, '[fast-composer] '.$e->getMessage()."\n");
             return 1;
         } finally {
+            $snapshot->cleanupWorkFiles();
             if (is_resource($operationLock)) {
                 flock($operationLock, LOCK_UN);
                 fclose($operationLock);
@@ -282,6 +282,7 @@ final class Application
         $state = $snapshot->load();
         if (!$state) {
             echo "snapshot: missing\n";
+            printf("cache: %s\n", $snapshot->dir());
             return 1;
         }
 
@@ -294,6 +295,7 @@ final class Application
         printf("versions: %d\n", $versions);
         printf("config-compatible: %s\n", $snapshot->isCompatible($state, $rootCfg) ? 'yes' : 'no');
         printf("refs-fresh: %s (ttl=%ds)\n", $snapshot->isFresh($state, $ttl) ? 'yes' : 'no', $ttl);
+        printf("cache: %s\n", $snapshot->dir());
 
         foreach ($state['repos'] ?? [] as $url => $repo) {
             if (!empty($repo['last_error'])) {
@@ -307,6 +309,14 @@ final class Application
     {
         [$code] = Process::run(array_merge(['composer'], $args), $root, true);
         return $code;
+    }
+
+    private function lockOnlyArgs(array $args): array
+    {
+        if (!$this->hasFlag($args, '--no-install')) {
+            $args[] = '--no-install';
+        }
+        return $args;
     }
 
     private function ttl(): int
@@ -333,9 +343,10 @@ final class Application
 
     private function acquireOperationLock(Snapshot $snapshot)
     {
-        if (!is_dir($snapshot->dir()) && !mkdir($snapshot->dir(), 0777, true) && !is_dir($snapshot->dir())) {
-            throw new \RuntimeException('Cannot create '.Snapshot::DIR);
+        if (!is_dir($snapshot->dir()) && !mkdir($snapshot->dir(), 0700, true) && !is_dir($snapshot->dir())) {
+            throw new \RuntimeException('Cannot create Fast Composer cache directory '.$snapshot->dir());
         }
+        @chmod($snapshot->dir(), 0700);
         $handle = fopen($snapshot->dir().'/operation.lock', 'c+');
         if ($handle === false) {
             throw new \RuntimeException('Cannot open operation lock');
@@ -413,7 +424,9 @@ final class Application
         echo "  fast-composer status\n";
         echo "  fast-composer install [args...]  (delegates to standard Composer)\n";
         echo "  fast-composer --version\n\n";
+        echo "Fast update/require operations always imply --no-install.\n";
         echo "FAST_COMPOSER_TTL controls broad full-update ref validation (default: 300 seconds).\n";
+        echo "FAST_COMPOSER_CACHE_DIR overrides the Fast Composer cache base directory.\n";
         echo "Targeted update/require and explicit root dev-* constraints always bypass the TTL.\n";
     }
 }
