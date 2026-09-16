@@ -3,8 +3,7 @@ namespace FastComposer;
 
 final class Snapshot
 {
-    public const DIR = '.fast-composer';
-    public const FORMAT = 2;
+    public const FORMAT = 3;
     public const DEFAULT_TTL = 300;
 
     private const KEEP = [
@@ -18,21 +17,37 @@ final class Snapshot
         'include-path','target-dir','bin','extra',
     ];
 
-    public function __construct(private string $root) {}
+    private string $root;
+    private string $cacheDir;
+    private string $workStem;
+
+    public function __construct(string $root)
+    {
+        $resolved = realpath($root);
+        $this->root = $resolved !== false ? $resolved : rtrim($root, DIRECTORY_SEPARATOR);
+        $this->cacheDir = $this->cacheBaseDir().'/projects/'.substr(hash('sha256', $this->root), 0, 24);
+        $this->workStem = '.fast-composer-'.getmypid().'-'.bin2hex(random_bytes(4));
+    }
 
     public function dir(): string
     {
-        return $this->root.'/'.self::DIR;
+        return $this->cacheDir;
     }
 
     public function workComposerPath(): string
     {
-        return $this->dir().'/composer.json';
+        return $this->root.'/'.$this->workStem.'.json';
     }
 
     public function workLockPath(): string
     {
-        return $this->dir().'/composer.lock';
+        return $this->root.'/'.$this->workStem.'.lock';
+    }
+
+    public function cleanupWorkFiles(): void
+    {
+        @unlink($this->workComposerPath());
+        @unlink($this->workLockPath());
     }
 
     public function load(): array
@@ -58,7 +73,7 @@ final class Snapshot
 
     public function readLock(string $path = 'composer.lock'): array
     {
-        if (!str_starts_with($path, '/')) {
+        if (!$this->isAbsolutePath($path)) {
             $path = $this->root.'/'.$path;
         }
         return $this->readJson($path, []);
@@ -72,10 +87,7 @@ final class Snapshot
 
     public function isFresh(array $snapshot, int $ttl): bool
     {
-        if ($ttl < 0) {
-            $ttl = 0;
-        }
-        $threshold = time() - $ttl;
+        $threshold = time() - max(0, $ttl);
 
         foreach ($snapshot['repos'] ?? [] as $repo) {
             if (($repo['managed'] ?? false) !== true || empty($repo['name'])) {
@@ -106,9 +118,6 @@ final class Snapshot
 
         $this->mergeLockIntoSnapshot($snapshot, $rootConfig, $lock, false);
 
-        // A normal Composer run has usually populated cache-repo-dir for every immutable SHA.
-        // Hydrate the complete remote ref set from that cache when possible, and fall back to a
-        // targeted fetch only for metadata Composer did not cache.
         foreach (array_keys($snapshot['repos']) as $url) {
             try {
                 if (empty($snapshot['repos'][$url]['name'])) {
@@ -192,7 +201,6 @@ final class Snapshot
     public function refreshPackages(array &$snapshot, array $patterns): int
     {
         $count = 0;
-        $matched = [];
 
         foreach ($snapshot['repos'] ?? [] as $url => $repo) {
             $name = $repo['name'] ?? null;
@@ -203,7 +211,6 @@ final class Snapshot
             foreach ($patterns as $pattern) {
                 if ($this->packagePatternMatches($pattern, $name)) {
                     $this->hydrateRepository($snapshot, $url, $name);
-                    $matched[$name] = true;
                     $count++;
                     break;
                 }
@@ -284,10 +291,6 @@ final class Snapshot
         return $path;
     }
 
-    /**
-     * Re-read changed root-declared VCS packages from the exact locked SHA before a generated lock
-     * is allowed to replace the real composer.lock.
-     */
     public function validateChangedPackages(array $beforeLock, array $afterLock, array $rootConfig): void
     {
         $before = $this->packagesByName($beforeLock);
@@ -382,8 +385,6 @@ final class Snapshot
             $next[$version] = $this->packageFromMetadata($meta, $package, $version, $url, $ref['sha']);
         }
 
-        // If a repository has no currently valid semver tags/branches, keep a locked package entry
-        // so unrelated updates do not make an existing lock impossible to represent locally.
         if ($next === [] && $existing !== []) {
             $next = $existing;
         }
@@ -443,7 +444,6 @@ final class Snapshot
             if ($version === null) {
                 continue;
             }
-            // Stable tags win if a branch normalizes to the same pretty version.
             $versions[$version] = ['sha' => $sha, 'kind' => 'tag', 'ref' => $tag];
         }
 
@@ -500,16 +500,17 @@ final class Snapshot
     private function composerCacheRepoDir(): string
     {
         [$code, $out] = Process::run(['composer', 'config', 'cache-repo-dir', '--absolute'], $this->root);
-        return $code === 0
-            ? trim($out)
-            : (getenv('COMPOSER_CACHE_DIR') ?: getenv('HOME').'/.cache/composer').'/repo';
+        if ($code === 0 && trim($out) !== '') {
+            return trim($out);
+        }
+        return $this->composerCacheBaseDir().'/repo';
     }
 
     private function composerAt(string $url, string $sha): array
     {
         $this->ensureDir();
         $tmp = $this->dir().'/fetch-'.bin2hex(random_bytes(5));
-        if (!mkdir($tmp, 0777, true) && !is_dir($tmp)) {
+        if (!mkdir($tmp, 0700, true) && !is_dir($tmp)) {
             throw new \RuntimeException("Cannot create temporary directory $tmp");
         }
 
@@ -563,7 +564,6 @@ final class Snapshot
 
     private function contentHash(array $content): string
     {
-        // Mirrors Composer\Package\Locker::getContentHash (Composer 2.x).
         $relevantKeys = [
             'name', 'version', 'require', 'require-dev', 'conflict', 'replace', 'provide',
             'minimum-stability', 'prefer-stable', 'repositories', 'extra',
@@ -627,14 +627,14 @@ final class Snapshot
         $url = trim($url);
         $local = realpath($url);
         if ($local !== false) {
-            return rtrim($local, '/');
+            return rtrim($local, '/\\');
         }
 
         if (preg_match('~(?:https?://|ssh://git@|git@)?github\.com[/:]([^/]+)/([^/]+?)(?:\.git)?/?$~i', $url, $m)) {
             return 'github.com/'.strtolower($m[1]).'/'.strtolower(preg_replace('/\.git$/i', '', $m[2]));
         }
 
-        return rtrim(preg_replace('/\.git$/i', '', $url), '/');
+        return rtrim(preg_replace('/\.git$/i', '', $url), '/\\');
     }
 
     private function branchVersion(string $branch): string
@@ -746,25 +746,78 @@ final class Snapshot
 
     private function ensureDir(): void
     {
-        if (!is_dir($this->dir()) && !mkdir($this->dir(), 0777, true) && !is_dir($this->dir())) {
-            throw new \RuntimeException('Cannot create '.self::DIR);
+        if (!is_dir($this->dir()) && !mkdir($this->dir(), 0700, true) && !is_dir($this->dir())) {
+            throw new \RuntimeException('Cannot create Fast Composer cache directory '.$this->dir());
         }
+        @chmod($this->dir(), 0700);
     }
 
     private function atomicWrite(string $path, string $contents): void
     {
         $dir = dirname($path);
-        if (!is_dir($dir) && !mkdir($dir, 0777, true) && !is_dir($dir)) {
+        if (!is_dir($dir) && !mkdir($dir, 0700, true) && !is_dir($dir)) {
             throw new \RuntimeException("Cannot create directory $dir");
         }
         $tmp = $path.'.tmp-'.bin2hex(random_bytes(4));
         if (file_put_contents($tmp, $contents, LOCK_EX) === false) {
             throw new \RuntimeException("Cannot write $tmp");
         }
+        @chmod($tmp, 0600);
         if (!rename($tmp, $path)) {
             @unlink($tmp);
             throw new \RuntimeException("Cannot replace $path");
         }
+    }
+
+    private function cacheBaseDir(): string
+    {
+        $override = getenv('FAST_COMPOSER_CACHE_DIR');
+        if (is_string($override) && trim($override) !== '') {
+            return rtrim($override, '/\\');
+        }
+        return $this->composerCacheBaseDir().'/fast-composer';
+    }
+
+    private function composerCacheBaseDir(): string
+    {
+        $cache = getenv('COMPOSER_CACHE_DIR');
+        if (is_string($cache) && trim($cache) !== '') {
+            return rtrim($cache, '/\\');
+        }
+
+        $composerHome = getenv('COMPOSER_HOME');
+        if (is_string($composerHome) && trim($composerHome) !== '') {
+            return rtrim($composerHome, '/\\').'/cache';
+        }
+
+        if (PHP_OS_FAMILY === 'Windows') {
+            $local = getenv('LOCALAPPDATA');
+            if (is_string($local) && trim($local) !== '') {
+                return rtrim($local, '/\\').'/Composer';
+            }
+        }
+
+        $home = getenv('HOME');
+        if (!is_string($home) || trim($home) === '') {
+            $home = sys_get_temp_dir();
+        }
+        $home = rtrim($home, '/\\');
+
+        if (PHP_OS_FAMILY === 'Darwin') {
+            return $home.'/Library/Caches/composer';
+        }
+
+        $xdg = getenv('XDG_CACHE_HOME');
+        if (is_string($xdg) && trim($xdg) !== '') {
+            return rtrim($xdg, '/\\').'/composer';
+        }
+
+        return $home.'/.cache/composer';
+    }
+
+    private function isAbsolutePath(string $path): bool
+    {
+        return str_starts_with($path, '/') || preg_match('~^[A-Za-z]:[\\\\/]~', $path) === 1;
     }
 
     private function rrmdir(string $dir): void
