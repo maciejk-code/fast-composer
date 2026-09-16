@@ -89,11 +89,9 @@ $checks=[
 ];
 foreach($checks as [$name,$actual,$expected]) if($actual!==$expected) throw new RuntimeException("metadata mismatch $name: ".var_export($actual,true));
 $hasLog=false; foreach($l["packages"] as $row){if($row["name"]==="psr/log")$hasLog=true;} if(!$hasLog) throw new RuntimeException("branch B dependency psr/log was not resolved");
-' 
-
+'
 echo "metadata-regression: PASS"
 
-# Repair content-hash to the real composer.json before testing Composer install behavior.
 CONTENT_HASH="$(php -r '
 $c=json_decode(file_get_contents("composer.json"),true);
 $keys=["name","version","require","require-dev","conflict","replace","provide","minimum-stability","prefer-stable","repositories","extra"];
@@ -101,7 +99,22 @@ $r=[]; foreach(array_intersect($keys,array_keys($c)) as $k){$r[$k]=$c[$k];}
 if(isset($c["config"]["platform"])){$r["config"]["platform"]=$c["config"]["platform"];}
 ksort($r); echo md5(json_encode($r));
 ')"
+ACTUAL_HASH="$(php -r '$l=json_decode(file_get_contents("composer.lock"),true);echo $l["content-hash"]??"";')"
+FAIL=0
+if [ "$ACTUAL_HASH" != "$CONTENT_HASH" ]; then
+  echo "REGRESSION: composer.lock content-hash belongs to temporary fast config, not real composer.json" >&2
+  echo "expected=$CONTENT_HASH actual=$ACTUAL_HASH" >&2
+  FAIL=1
+else
+  echo "content-hash: PASS"
+fi
+
+# Normalize hash so the next experiment tests only whether Composer revalidates package metadata from source.
 php -r '$p="composer.lock";$l=json_decode(file_get_contents($p),true);$l["content-hash"]=$argv[1];file_put_contents($p,json_encode($l,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$CONTENT_HASH"
+
+rm -rf vendor
+composer install --no-interaction --no-plugins --no-scripts > "$WORK/valid-install.log" 2>&1 || { cat "$WORK/valid-install.log"; exit 1; }
+echo "standard-composer-install-valid-lock: PASS"
 
 # Deliberately corrupt the lock: keep source.reference=B but replace B metadata with A-like metadata
 # and remove psr/log from the locked set. This simulates the dangerous class of fast-composer bug.
@@ -124,28 +137,26 @@ file_put_contents($p,json_encode($l,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\
 
 rm -rf vendor
 set +e
-composer install --no-interaction --no-plugins --no-scripts --no-audit > "$WORK/install.log" 2>&1
+composer install --no-interaction --no-plugins --no-scripts > "$WORK/install.log" 2>&1
 INSTALL_CODE=$?
 set -e
 cat "$WORK/install.log"
 if [ "$INSTALL_CODE" -ne 0 ]; then
   echo "standard-composer-install-rejected-corrupt-metadata: PASS"
-  exit 0
+else
+  echo "standard-composer-install-accepted-corrupt-metadata: OBSERVED"
+  set +e
+  php "$FC_ROOT/bin/fast-composer" verify >/tmp/fast-composer-verify.log 2>&1
+  VERIFY_CODE=$?
+  set -e
+  cat /tmp/fast-composer-verify.log
+  if [ "$VERIFY_CODE" -eq 0 ]; then
+    echo "REGRESSION: fast-composer failed to detect lock/source metadata mismatch" >&2
+    FAIL=1
+  else
+    echo "metadata-source-verification: PASS"
+  fi
 fi
 
-echo "standard-composer-install-accepted-corrupt-metadata: OBSERVED"
-
-# Regression expectation: fast-composer must reject a reachable SHA whose locked metadata
-# does not match composer.json at that exact SHA.
-set +e
-php "$FC_ROOT/bin/fast-composer" verify >/tmp/fast-composer-verify.log 2>&1
-VERIFY_CODE=$?
-set -e
-cat /tmp/fast-composer-verify.log
-if [ "$VERIFY_CODE" -eq 0 ]; then
-  echo "REGRESSION: fast-composer failed to detect lock/source metadata mismatch" >&2
-  exit 1
-fi
-
-echo "metadata-source-verification: PASS"
 echo "A=$SHA_A B=$SHA_B"
+exit "$FAIL"
