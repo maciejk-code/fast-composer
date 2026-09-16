@@ -31,3 +31,4 @@ jobs:
           tools: composer:2.10.3
       - run: composer install --no-interaction --prefer-dist
       - run: bash tests/safety-contract.sh
+      - run: bash tests/ci-verifier-contract.sh
