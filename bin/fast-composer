@@ -1,0 +1,4 @@
+#!/usr/bin/env php
+<?php
+require __DIR__ . '/../vendor/autoload.php';
+exit((new FastComposer\Application())->run(array_slice($argv, 1)));
