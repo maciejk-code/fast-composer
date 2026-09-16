@@ -20,7 +20,7 @@ jobs:
       - run: composer validate --strict
       - run: composer install --no-interaction --prefer-dist
       - run: composer test
-      - run: ./bin/fast-composer --help
+      - run: php bin/fast-composer --help
   safety-contract:
     runs-on: ubuntu-24.04
     steps:
