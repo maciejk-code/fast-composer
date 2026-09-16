@@ -1,0 +1,10 @@
+{
+  "name": "maciejk-code/fast-composer",
+  "description": "Local Composer VCS metadata accelerator for optimistic targeted lock-file updates",
+  "type": "library",
+  "license": "MIT",
+  "require": {"php": ">=8.2"},
+  "autoload": {"psr-4": {"FastComposer\\": "src/"}},
+  "bin": ["bin/fast-composer"],
+  "scripts": {"test": "php tests/run.php"}
+}
