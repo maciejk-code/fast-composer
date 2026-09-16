@@ -50,16 +50,22 @@ final class Snapshot
 
         foreach (($rootConfig['repositories'] ?? []) as $repo) {
             if (is_array($repo) && ($repo['type'] ?? null) === 'vcs' && is_string($repo['url'] ?? null)) {
-                $snapshot['repos'][$repo['url']] = ['url' => $repo['url']];
+                $snapshot['repos'][$repo['url']] = ['url' => $repo['url'], 'managed' => true];
             }
         }
 
+        // Only root-declared type:vcs repositories belong to Fast Composer. A normal Packagist
+        // package can also have source.type=git, but its normalized metadata remains Composer's job.
         foreach (array_merge($lock['packages'] ?? [], $lock['packages-dev'] ?? []) as $package) {
             $source = $package['source'] ?? [];
             if (($source['type'] ?? null) !== 'git' || empty($source['url']) || empty($package['name'])) {
                 continue;
             }
-            $snapshot['repos'][$source['url']]['name'] = $package['name'];
+            $managedUrl = $this->managedRepoUrl($source['url'], $rootConfig);
+            if ($managedUrl === null) {
+                continue;
+            }
+            $snapshot['repos'][$managedUrl]['name'] = $package['name'];
             $snapshot['packages'][$package['name']][$package['version']] = $this->cleanPackage($package);
         }
 
@@ -137,11 +143,11 @@ final class Snapshot
     }
 
     /**
-     * Mandatory fast-path safety check. Only Git packages whose lock entry changed are re-read
-     * from the exact locked SHA. This keeps the common path targeted while ensuring the lock never
-     * contains package metadata that differs from composer.json at that SHA.
+     * Mandatory fast-path safety check. Re-read only changed packages that come from root-declared
+     * type:vcs repositories. Packagist packages may also have git source URLs, but their normalized
+     * metadata is intentionally not compared to raw source composer.json.
      */
-    public function validateChangedPackages(array $beforeLock, array $afterLock): void
+    public function validateChangedPackages(array $beforeLock, array $afterLock, array $rootConfig): void
     {
         $before = $this->packagesByName($beforeLock);
         $after = $this->packagesByName($afterLock);
@@ -154,6 +160,9 @@ final class Snapshot
 
             $source = $package['source'] ?? [];
             if (($source['type'] ?? null) !== 'git' || empty($source['url']) || empty($source['reference'])) {
+                continue;
+            }
+            if ($this->managedRepoUrl($source['url'], $rootConfig) === null) {
                 continue;
             }
 
@@ -181,7 +190,7 @@ final class Snapshot
         file_put_contents($lockPath, json_encode($lock, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
     }
 
-    public function verifyLock(): array
+    public function verifyLock(array $rootConfig): array
     {
         $lock = $this->readLock();
         $results = [];
@@ -189,6 +198,9 @@ final class Snapshot
         foreach (array_merge($lock['packages'] ?? [], $lock['packages-dev'] ?? []) as $package) {
             $source = $package['source'] ?? [];
             if (($source['type'] ?? null) !== 'git' || empty($source['url']) || empty($source['reference'])) {
+                continue;
+            }
+            if ($this->managedRepoUrl($source['url'], $rootConfig) === null) {
                 continue;
             }
 
@@ -347,6 +359,35 @@ final class Snapshot
         ksort($relevant);
 
         return hash('md5', json_encode($relevant));
+    }
+
+    private function managedRepoUrl(string $sourceUrl, array $rootConfig): ?string
+    {
+        $source = $this->normalizeGitUrl($sourceUrl);
+        foreach (($rootConfig['repositories'] ?? []) as $repo) {
+            if (!is_array($repo) || ($repo['type'] ?? null) !== 'vcs' || !is_string($repo['url'] ?? null)) {
+                continue;
+            }
+            if ($this->normalizeGitUrl($repo['url']) === $source) {
+                return $repo['url'];
+            }
+        }
+        return null;
+    }
+
+    private function normalizeGitUrl(string $url): string
+    {
+        $url = trim($url);
+        $local = realpath($url);
+        if ($local !== false) {
+            return rtrim($local, '/');
+        }
+
+        if (preg_match('~(?:https?://|ssh://git@|git@)?github\.com[/:]([^/]+)/([^/]+?)(?:\.git)?/?$~i', $url, $m)) {
+            return 'github.com/'.strtolower($m[1]).'/'.strtolower(preg_replace('/\.git$/i', '', $m[2]));
+        }
+
+        return rtrim(preg_replace('/\.git$/i', '', $url), '/');
     }
 
     private function normalize(mixed $value): mixed
