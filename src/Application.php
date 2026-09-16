@@ -28,7 +28,7 @@ final class Application
         try {
             if ($cmd === 'verify') {
                 $bad = 0;
-                foreach ($snap->verifyLock() as $name => $result) {
+                foreach ($snap->verifyLock($rootCfg) as $name => $result) {
                     if (!$result['reachable']) {
                         $status = 'MISSING';
                         $bad++;
@@ -126,9 +126,8 @@ final class Application
             $afterLock = $snap->readLock($fastLock);
 
             // Composer install trusts package metadata stored in composer.lock. Therefore this check
-            // is mandatory: re-read only changed Git packages from the exact SHA before publishing
-            // the optimistic lock to the real project.
-            $snap->validateChangedPackages($beforeLock, $afterLock);
+            // is mandatory: re-read only changed root-declared VCS packages from the exact SHA.
+            $snap->validateChangedPackages($beforeLock, $afterLock, $rootCfg);
 
             // Composer created the lock from .fast-composer.json, whose repositories differ from
             // the real project. Rewrite the hash to exactly match the real composer.json semantics.
