@@ -102,6 +102,14 @@ final class Application
             } else {
                 $targets = $this->packageArguments(array_slice($args, 1));
                 if ($targets === []) {
+                    // Mutable dev branches explicitly required by the root are never hidden behind
+                    // the global TTL. This covers a branch added manually to composer.json followed
+                    // by a plain `fast-composer update`.
+                    $devCount = $this->refreshExplicitDevRequirements($snapshot, $state, $rootCfg);
+                    if ($devCount > 0) {
+                        printf("[fast-composer] revalidated %d explicit dev branch refs\n", $devCount);
+                    }
+
                     $count = $snapshot->refreshAllIfStale($state, $rootCfg, $ttl);
                     if ($count > 0) {
                         printf("[fast-composer] refreshed %d VCS repositories (TTL %ds)\n", $count, $ttl);
@@ -200,12 +208,47 @@ final class Application
                 continue;
             }
 
-            if (is_string($constraint) && str_starts_with($constraint, 'dev-') && strlen($constraint) > 4) {
-                $snapshot->ensureBranch($state, $name, substr($constraint, 4));
+            $branch = is_string($constraint) ? $this->explicitDevBranch($constraint) : null;
+            if ($branch !== null) {
+                $snapshot->ensureBranch($state, $name, $branch);
             } else {
                 $snapshot->refreshPackages($state, [$name]);
             }
         }
+    }
+
+    private function refreshExplicitDevRequirements(Snapshot $snapshot, array &$state, array $rootCfg): int
+    {
+        $count = 0;
+        foreach (['require', 'require-dev'] as $section) {
+            foreach (($rootCfg[$section] ?? []) as $name => $constraint) {
+                if (!is_string($name) || !is_string($constraint) || !$this->isManagedPackage($state, $name)) {
+                    continue;
+                }
+                $branch = $this->explicitDevBranch($constraint);
+                if ($branch === null) {
+                    continue;
+                }
+                $snapshot->ensureBranch($state, $name, $branch);
+                $count++;
+            }
+        }
+        return $count;
+    }
+
+    private function explicitDevBranch(string $constraint): ?string
+    {
+        $constraint = trim($constraint);
+        if (!str_starts_with($constraint, 'dev-')) {
+            return null;
+        }
+
+        $token = preg_split('/\s+/', $constraint, 2)[0];
+        $token = preg_replace('/@[^@]+$/', '', $token);
+        if (!is_string($token) || !str_starts_with($token, 'dev-') || strlen($token) <= 4) {
+            return null;
+        }
+        return substr($token, 4);
     }
 
     /** @return list<string> */
@@ -370,7 +413,7 @@ final class Application
         echo "  fast-composer status\n";
         echo "  fast-composer install [args...]  (delegates to standard Composer)\n";
         echo "  fast-composer --version\n\n";
-        echo "FAST_COMPOSER_TTL controls full-update ref validation (default: 300 seconds).\n";
-        echo "Targeted update/require always refreshes the matching managed VCS repository.\n";
+        echo "FAST_COMPOSER_TTL controls broad full-update ref validation (default: 300 seconds).\n";
+        echo "Targeted update/require and explicit root dev-* constraints always bypass the TTL.\n";
     }
 }
