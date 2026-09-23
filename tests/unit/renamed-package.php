@@ -16,6 +16,6 @@ file_put_contents($root.'/composer.json', json_encode($config)."\n");
 $state = [];
 (new Snapshot($root))->sync($state, $config);
 fc_assert(
-    ($state['packages']['acme/renamed']['1.0.0']['name'] ?? null) === 'acme/renamed' && !isset($state['packages']['acme/old-name']),
-    'old tag with a different name was not attributed to the repository package: '.json_encode(array_keys($state['packages'] ?? []))
+    (Snapshot::versions($state)['acme/renamed']['1.0.0']['name'] ?? null) === 'acme/renamed' && !isset(Snapshot::versions($state)['acme/old-name']),
+    'old tag with a different name was not attributed to the repository package: '.json_encode(array_keys(Snapshot::versions($state)))
 );

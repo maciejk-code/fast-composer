@@ -9,7 +9,7 @@ Fast Composer does **not** implement a dependency solver. It snapshots VCS packa
 ## Requirements
 
 - PHP 8.2+
-- Composer 2.x
+- Composer 2.3+ installed as the regular phar (`composer` on `PATH`): Fast Composer uses Composer's own classes to interpret VCS repositories. With a non-phar Composer (e.g. a distribution package) it warns and runs regular Composer.
 - Git
 - Git access to every private `type: vcs` repository you want Fast Composer to accelerate
 
@@ -281,7 +281,8 @@ The repository maintains tests for:
 | Class | Responsibility |
 | --- | --- |
 | `Application` | CLI commands and the order of steps (sync → refresh → solve → validate → publish) |
-| `Snapshot` | Per-project snapshot state: sync, TTL/targeted refresh, dev branches, the temporary Composer repository |
+| `Snapshot` | Per-project snapshot state: sync, TTL/targeted refresh, dev branches, one local `composer` repository per VCS repository (same position and options) |
+| `ComposerPackages`, `MirrorDriver` | Package data is produced by **Composer's own `VcsRepository`**, reading from the local mirror through a Composer VCS driver — version names, skipped tags, package names, `default-branch`, aliases and release dates are Composer's logic |
 | `GitMirror` | All network Git access: shared shallow mirrors, parallel fetches with progress, locks, `cat-file` reads, reachability proven during this run |
 | `LockValidator` | Safety contract: changed/locked VCS packages must match `composer.json` at their exact SHA |
 | `ComposerSolver`, `InProcessComposer` | Running the real Composer solver (in-process when possible) |
