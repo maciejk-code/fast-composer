@@ -201,11 +201,12 @@ Snapshot/cache data lives outside the project working tree in `~/.cache/fast-com
 
 ## Authentication and secrets
 
-Fast Composer does not accept, copy, persist, or log GitHub tokens, SSH private keys, `auth.json`, or other credentials.
+Fast Composer talks to VCS repositories with Git. For every network Git call it uses:
 
-Its VCS refresh path invokes Git directly (`git fetch` into a local mirror), so the VCS URL must already work with your normal Git authentication. SSH URLs work naturally when your SSH agent/key is configured. HTTPS URLs work when Git itself has credentials available through its normal credential mechanism.
+1. **The credentials Composer would use** for an HTTP(S) URL — `auth.json` of the project and of `COMPOSER_HOME`, and `COMPOSER_AUTH` (`github-oauth`, `gitlab-token`/`gitlab-oauth`, `http-basic`, `bearer`), read with Composer's own configuration code and shaped like Composer's Git utility does. They are passed to Git as an `Authorization` header through `GIT_CONFIG_*` environment variables of that one process: never written to disk and not visible in the process list (Composer itself puts them into the URL).
+2. **Git's own authentication** — SSH keys/agent for `git@…` URLs, the credential helper for HTTPS. If Composer's credentials are rejected, the call is retried this way.
 
-A Composer-only OAuth token in `auth.json` is not automatically converted into Git credentials by Fast Composer. This is intentionally kept out of v0.1 to avoid duplicating or persisting credentials.
+Git runs non-interactively (`GIT_TERMINAL_PROMPT=0`), so missing credentials fail with a hint instead of hanging. Fast Composer never stores or logs credentials.
 
 ## Safety boundary
 

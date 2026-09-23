@@ -43,6 +43,14 @@ final class Application
         $snapshot->setLogger(function (string $message): void {
             $this->log($message);
         });
+        // HTTPS VCS URLs get the same credentials Composer would use (auth.json, COMPOSER_AUTH).
+        $auth = null;
+        $snapshot->mirror()->setCredentials(static function (string $url) use (&$auth, $root): array {
+            if ($auth === null) {
+                $auth = ComposerPackages::available() ? new ComposerAuth($root) : false;
+            }
+            return $auth === false ? [] : $auth->gitEnvironment($url);
+        });
         // The in-process Composer solver may exit() directly; never leave work files behind.
         register_shutdown_function([$snapshot, 'cleanupWorkFiles']);
         $operationLock = null;

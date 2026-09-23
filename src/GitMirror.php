@@ -22,6 +22,8 @@ final class GitMirror
     private array $synced = [];
     /** @var null|callable(string):void */
     private $logger = null;
+    /** @var null|callable(string):array<string,string> extra Git environment (credentials) per URL */
+    private $credentials = null;
 
     /**
      * @param string $baseDir cache base directory; mirrors live in $baseDir/mirrors
@@ -35,6 +37,12 @@ final class GitMirror
     public function setLogger(callable $logger): void
     {
         $this->logger = $logger;
+    }
+
+    /** @param callable(string):array<string,string> $credentials extra Git environment for a remote URL */
+    public function setCredentials(callable $credentials): void
+    {
+        $this->credentials = $credentials;
     }
 
     /**
@@ -58,17 +66,17 @@ final class GitMirror
             if ($refreshDefaultBranch || !is_file($dir.'/'.self::DEFAULT_BRANCH_FILE)) {
                 // Composer's root identifier is the remote HEAD branch; ask for it in the same
                 // parallel batch (it rarely changes, so it is remembered per mirror).
-                $commands[$url.'#HEAD'] = [['git', 'ls-remote', '--symref', '--', $url, 'HEAD'], $this->cwd];
+                $commands[$url.'#HEAD'] = $this->remote($url, [['git', 'ls-remote', '--symref', '--', $url, 'HEAD'], $this->cwd]);
             }
             // The first fetch only takes the tips (--depth=1). Later fetches are incremental
             // against those tips; a repeated --depth would force an extra pack round even when
             // nothing changed.
             $depth = is_file($dir.'/'.self::SYNC_MARKER) ? [] : ['--depth=1'];
-            $commands[$url] = $this->git($dir, array_merge(
+            $commands[$url] = $this->remote($url, $this->git($dir, array_merge(
                 ['fetch', '-q', '--prune', '--no-tags'],
                 $depth,
                 ['--', $url, '+refs/heads/*:refs/heads/*', '+refs/tags/*:refs/tags/*']
-            ));
+            )));
         }
 
         $urlsToLock = array_values(array_filter(array_keys($commands), static fn ($key): bool => !str_ends_with((string) $key, '#HEAD')));
@@ -184,9 +192,9 @@ final class GitMirror
                 continue;
             }
             $ref = 'refs/heads/'.$branch;
-            $commands[$key] = $this->git($this->ensureMirror($url), [
+            $commands[$key] = $this->remote($url, $this->git($this->ensureMirror($url), [
                 'fetch', '-q', '--depth=1', '--no-tags', '--no-write-fetch-head', '--', $url, '+'.$ref.':'.$ref,
-            ]);
+            ]));
             $urls[] = $url;
             $labels[$key] = $label;
         }
@@ -334,10 +342,10 @@ final class GitMirror
             $dir = $this->ensureMirror($url);
             // Keep command lines bounded while amortizing SSH/TLS setup across many SHAs.
             foreach (array_chunk($shas, 64) as $i => $chunk) {
-                $commands[$url.'#'.$i] = $this->git($dir, array_merge(
+                $commands[$url.'#'.$i] = $this->remote($url, $this->git($dir, array_merge(
                     ['fetch', '-q', '--depth=1', '--no-tags', '--no-write-fetch-head', '--', $url],
                     $chunk
-                ));
+                )));
                 $chunks[$url.'#'.$i] = [$url, $chunk];
             }
         }
@@ -406,6 +414,21 @@ final class GitMirror
     }
 
     /**
+     * Attach the credentials Composer would use for $url to a network Git command.
+     *
+     * @param array{0:list<string>,1:string} $command
+     * @return array{0:list<string>,1:string,2?:array<string,string>}
+     */
+    private function remote(string $url, array $command): array
+    {
+        $env = $this->credentials !== null ? ($this->credentials)($url) : [];
+        if ($env !== []) {
+            $command[2] = $env;
+        }
+        return $command;
+    }
+
+    /**
      * Run Git commands concurrently while holding the locks of the mirrors they write to.
      *
      * @param array<array-key,array{0:list<string>,1:?string}> $commands
@@ -466,6 +489,29 @@ final class GitMirror
         $total = count($commands);
         $this->log(sprintf('%s: %d (up to %d in parallel)', $what, $total, min($total, Process::defaultJobs())));
 
+        $results = $this->runWithProgress($commands, $labelOf);
+
+        // Composer credentials were tried first; like Composer (which tries both), fall back to
+        // Git's own authentication (SSH agent, credential helper) when they were not accepted.
+        $retry = [];
+        foreach ($results as $key => [$code]) {
+            if ($code !== 0 && isset($commands[$key][2])) {
+                $retry[$key] = [$commands[$key][0], $commands[$key][1]];
+            }
+        }
+        if ($retry !== []) {
+            $this->log(sprintf('retrying %d without Composer credentials', count($retry)));
+            foreach ($this->runWithProgress($retry, $labelOf) as $key => $result) {
+                if ($result[0] === 0) {
+                    $results[$key] = $result;
+                }
+            }
+        }
+        return $results;
+    }
+
+    private function runWithProgress(array $commands, callable $labelOf): array
+    {
         return Process::runMany($commands, null, function (string $event, $subject, ?array $result, float $seconds, int $done, int $total) use ($labelOf): void {
             if ($event === 'done') {
                 [$code, , $err] = $result;
