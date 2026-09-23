@@ -1,100 +1,50 @@
 <?php
 namespace FastComposer;
 
+/**
+ * The per-project snapshot: every version of every managed VCS package, exposed to Composer
+ * as a local `composer` repository instead of the VCS repositories themselves.
+ *
+ * State shape: ['format', 'generated_at', 'repo_config_hash',
+ *               'repos' => [url => ['url', 'managed', 'name', 'refs', 'checked_at']],
+ *               'packages' => [name => [version => package]]]
+ */
 final class Snapshot
 {
-    public const FORMAT = 4;
+    public const FORMAT = 5;
     public const DEFAULT_TTL = 300;
-    private const MIRROR_MARKER = 'fast-composer-synced';
-    private const MIRROR_HEAD = 'refs/fast-composer/HEAD';
 
+    /** Package fields kept from composer.json / the lock (what Composer's solver needs). */
     private const KEEP = [
-        'name','description','type','keywords','homepage','license','authors','support','funding',
-        'require','require-dev','conflict','replace','provide','suggest','autoload','include-path',
-        'target-dir','bin','extra','time',
-    ];
-
-    private const VERIFY = [
-        'type','require','require-dev','conflict','replace','provide','suggest','autoload',
-        'include-path','target-dir','bin','extra',
+        'name', 'description', 'type', 'keywords', 'homepage', 'license', 'authors', 'support', 'funding',
+        'require', 'require-dev', 'conflict', 'replace', 'provide', 'suggest', 'autoload', 'include-path',
+        'target-dir', 'bin', 'extra', 'time',
     ];
 
     private string $root;
-    private string $baseDir;
     private string $cacheDir;
     private string $workStem;
-    /** @var array<string,?array> Exact-SHA source metadata read during this process only (null: no composer.json). */
-    private array $operationMetadata = [];
-    /** @var array<string,true> URL+SHA pairs obtained from the remote during this process. */
-    private array $reachable = [];
-    /** @var array<string,true> Repositories whose tips were fetched during this process. */
-    private array $fetchedTips = [];
-    /** @var array<string,string> Package name per repository, resolved during this process. */
-    private array $repositoryNames = [];
-    /** @var null|callable(string):void */
-    private $logger = null;
+    private GitMirror $mirror;
 
-    public function __construct(string $root)
+    public function __construct(string $root, ?GitMirror $mirror = null)
     {
         $resolved = realpath($root);
         $this->root = $resolved !== false ? $resolved : rtrim($root, DIRECTORY_SEPARATOR);
-        $this->baseDir = $this->cacheBaseDir();
-        $this->cacheDir = $this->baseDir.'/projects/'.substr(hash('sha256', $this->root), 0, 24);
+        $baseDir = self::cacheBaseDir();
+        $this->cacheDir = $baseDir.'/projects/'.substr(hash('sha256', $this->root), 0, 24);
         $this->workStem = '.fast-composer-'.getmypid().'-'.bin2hex(random_bytes(4));
+        $this->mirror = $mirror ?? new GitMirror($baseDir, $this->root);
+    }
+
+    public function mirror(): GitMirror
+    {
+        return $this->mirror;
     }
 
     /** @param callable(string):void $logger receives human-readable progress lines */
     public function setLogger(callable $logger): void
     {
-        $this->logger = $logger;
-    }
-
-    private function log(string $message): void
-    {
-        if ($this->logger !== null) {
-            ($this->logger)($message);
-        }
-    }
-
-    /**
-     * Run Git commands concurrently and report per-repository progress plus a heartbeat naming
-     * what is still running, so a slow or stuck remote is visible instead of silent.
-     *
-     * @param array<array-key,array{0:list<string>,1:?string}> $commands
-     * @param callable(array-key):string $labelOf
-     */
-    private function runGit(array $commands, string $what, callable $labelOf): array
-    {
-        if ($commands === []) {
-            return [];
-        }
-        $total = count($commands);
-        $this->log(sprintf('%s: %d (up to %d in parallel)', $what, $total, min($total, Process::defaultJobs())));
-
-        return Process::runMany($commands, null, function (string $event, $subject, ?array $result, float $seconds, int $done, int $total) use ($labelOf): void {
-            if ($event === 'done') {
-                [$code, , $err] = $result;
-                $status = $code === 0 ? 'ok' : 'FAILED: '.strtok(trim($err) ?: 'exit '.$code, "\n");
-                $this->log(sprintf('  [%d/%d] %s %s (%.1fs)', $done, $total, $labelOf($subject), $status, $seconds));
-                return;
-            }
-            $labels = array_map($labelOf, $subject);
-            $shown = implode(', ', array_slice($labels, 0, 3)).(count($labels) > 3 ? sprintf(' (+%d more)', count($labels) - 3) : '');
-            $this->log(sprintf('  ... %d/%d done after %.0fs, still waiting on: %s', $done, $total, $seconds, $shown));
-            if ($seconds >= 15) {
-                $this->log('      no progress for a long time usually means Git/SSH is waiting for an unreachable host, a VPN, or an SSH passphrase/host-key confirmation (run `ssh -T <host>` once, or load the key into ssh-agent)');
-            }
-        });
-    }
-
-    /** Add a hint to Git errors caused by missing credentials. */
-    private function gitError(string $err, string $fallback): string
-    {
-        $message = trim($err) ?: $fallback;
-        if (preg_match('/terminal prompts disabled|could not read (Username|Password)|Permission denied \(publickey|Host key verification failed/i', $message)) {
-            $message .= "\nHint: Fast Composer runs Git non-interactively. Make sure `git ls-remote <url>` works without prompting (SSH key in ssh-agent, known host accepted, or an HTTPS credential helper).";
-        }
-        return $message;
+        $this->mirror->setLogger($logger);
     }
 
     public function dir(): string
@@ -120,12 +70,7 @@ final class Snapshot
 
     public function load(): array
     {
-        $path = $this->dir().'/snapshot.json';
-        if (!is_file($path)) {
-            return [];
-        }
-
-        $snapshot = $this->readJson($path, []);
+        $snapshot = JsonFile::readIfExists($this->dir().'/snapshot.json');
         return ($snapshot['format'] ?? null) === self::FORMAT ? $snapshot : [];
     }
 
@@ -133,39 +78,33 @@ final class Snapshot
     {
         $this->ensureDir();
         $snapshot['format'] = self::FORMAT;
-        $this->atomicWrite(
+        JsonFile::atomicWrite(
             $this->dir().'/snapshot.json',
-            json_encode($snapshot, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)."\n"
+            json_encode($snapshot, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)."\n",
+            true
         );
     }
 
     public function readLock(string $path = 'composer.lock'): array
     {
-        if (!$this->isAbsolutePath($path)) {
-            $path = $this->root.'/'.$path;
-        }
-        return $this->readJson($path, []);
+        $absolute = str_starts_with($path, '/') || preg_match('~^[A-Za-z]:[\\\\/]~', $path) === 1;
+        return JsonFile::readIfExists($absolute ? $path : $this->root.'/'.$path);
     }
 
     public function isCompatible(array $snapshot, array $rootConfig): bool
     {
         return ($snapshot['format'] ?? null) === self::FORMAT
-            && ($snapshot['repo_config_hash'] ?? null) === $this->repoConfigHash($rootConfig);
+            && ($snapshot['repo_config_hash'] ?? null) === RootConfig::repositoriesHash($rootConfig);
     }
 
     public function isFresh(array $snapshot, int $ttl): bool
     {
         $threshold = time() - max(0, $ttl);
-
         foreach ($snapshot['repos'] ?? [] as $repo) {
-            if (($repo['managed'] ?? false) !== true || empty($repo['name'])) {
-                continue;
-            }
-            if (($repo['checked_at'] ?? 0) < $threshold) {
+            if (($repo['managed'] ?? false) === true && !empty($repo['name']) && ($repo['checked_at'] ?? 0) < $threshold) {
                 return false;
             }
         }
-
         return true;
     }
 
@@ -189,12 +128,9 @@ final class Snapshot
      */
     public function sync(array &$snapshot, array $rootConfig): int
     {
-        $snapshot['format'] = self::FORMAT;
-        $snapshot['generated_at'] ??= time();
-        $snapshot['repos'] ??= [];
-        $snapshot['packages'] ??= [];
+        $this->initialize($snapshot);
 
-        $declared = array_flip($this->managedRepositories($rootConfig));
+        $declared = array_flip(RootConfig::vcsUrls($rootConfig));
         foreach ($snapshot['repos'] as $url => $repo) {
             if (isset($declared[$url])) {
                 continue;
@@ -216,7 +152,7 @@ final class Snapshot
             }
         }
 
-        $errors = $this->fetchMirrors($pending);
+        $errors = $this->mirror->sync($pending);
         $unnamed = [];
         foreach ($pending as $url) {
             if (isset($errors[$url])) {
@@ -226,38 +162,34 @@ final class Snapshot
                 $unnamed[] = $url;
             }
         }
-        if ($unnamed !== []) {
-            $this->discoverRepositoryNames($snapshot, $unnamed);
+        foreach ($unnamed === [] ? [] : $this->mirror->defaultBranchNames($unnamed) as $url => $name) {
+            $snapshot['repos'][$url]['name'] = $name;
         }
         foreach ($pending as $url) {
-            $this->hydrateFromMirror($snapshot, $url, $snapshot['repos'][$url]['name']);
+            $this->hydrate($snapshot, $url, $snapshot['repos'][$url]['name']);
         }
 
-        $snapshot['repo_config_hash'] = $this->repoConfigHash($rootConfig);
+        $snapshot['repo_config_hash'] = RootConfig::repositoriesHash($rootConfig);
         $this->save($snapshot);
         return count($pending);
     }
 
     public function mergeLockIntoSnapshot(array &$snapshot, array $rootConfig, array $lock, bool $save = true): void
     {
-        $snapshot['format'] = self::FORMAT;
-        $snapshot['repo_config_hash'] = $this->repoConfigHash($rootConfig);
-        $snapshot['generated_at'] ??= time();
-        $snapshot['repos'] ??= [];
-        $snapshot['packages'] ??= [];
+        $this->initialize($snapshot);
+        $snapshot['repo_config_hash'] = RootConfig::repositoriesHash($rootConfig);
 
-        foreach ($this->managedRepositories($rootConfig) as $url) {
+        foreach (RootConfig::vcsUrls($rootConfig) as $url) {
             $snapshot['repos'][$url] ??= ['url' => $url, 'managed' => true];
             $snapshot['repos'][$url]['managed'] = true;
         }
 
-        foreach (array_merge($lock['packages'] ?? [], $lock['packages-dev'] ?? []) as $package) {
+        foreach (LockFile::packages($lock) as $package) {
             $source = $package['source'] ?? [];
             if (($source['type'] ?? null) !== 'git' || empty($source['url']) || empty($package['name'])) {
                 continue;
             }
-
-            $managedUrl = $this->managedRepoUrl($source['url'], $rootConfig);
+            $managedUrl = RootConfig::managedUrlFor($source['url'], $rootConfig);
             if ($managedUrl === null) {
                 continue;
             }
@@ -286,31 +218,24 @@ final class Snapshot
         }
 
         // One network round-trip per repository, overlapped across repositories.
-        $errors = $this->fetchMirrors($urls);
-
-        $count = 0;
+        $errors = $this->mirror->sync($urls);
         foreach ($urls as $url) {
             if (isset($errors[$url])) {
                 throw new \RuntimeException($errors[$url]);
             }
             $name = $snapshot['repos'][$url]['name'] ?? null;
             if (!is_string($name) || $name === '') {
-                $this->discoverRepositoryName($snapshot, $url);
-                $name = $snapshot['repos'][$url]['name'] ?? null;
+                $name = $this->mirror->defaultBranchNames([$url])[$url];
             }
-            if (!is_string($name) || $name === '') {
-                throw new \RuntimeException("Cannot determine package name for VCS repository $url");
-            }
-            $this->hydrateFromMirror($snapshot, $url, $name);
-            $count++;
+            $this->hydrate($snapshot, $url, $name);
         }
 
-        $snapshot['repo_config_hash'] = $this->repoConfigHash($rootConfig);
+        $snapshot['repo_config_hash'] = RootConfig::repositoriesHash($rootConfig);
         $this->save($snapshot);
-        return $count;
+        return count($urls);
     }
 
-    /** @param list<string> $patterns */
+    /** @param list<string> $patterns package names or wildcards */
     public function refreshPackages(array &$snapshot, array $patterns): int
     {
         $matches = [];
@@ -319,7 +244,6 @@ final class Snapshot
             if (!is_string($name) || $name === '') {
                 continue;
             }
-
             foreach ($patterns as $pattern) {
                 if ($this->packagePatternMatches($pattern, $name)) {
                     $matches[(string) $url] = $name;
@@ -328,12 +252,12 @@ final class Snapshot
             }
         }
 
-        $errors = $this->fetchMirrors(array_keys($matches));
+        $errors = $this->mirror->sync(array_keys($matches));
         foreach ($matches as $url => $name) {
             if (isset($errors[$url])) {
                 throw new \RuntimeException($errors[$url]);
             }
-            $this->hydrateFromMirror($snapshot, $url, $name);
+            $this->hydrate($snapshot, $url, $name);
         }
 
         $this->save($snapshot);
@@ -353,40 +277,24 @@ final class Snapshot
      */
     public function ensureBranches(array &$snapshot, array $requests): array
     {
-        $commands = [];
-        $urls = [];
+        $fetches = [];
         foreach ($requests as $i => [$package, $branch]) {
             $url = $this->urlForPackage($snapshot, $package);
             if (!$url) {
                 throw new \RuntimeException("No VCS repository mapping for $package. Run a normal Composer update once, then fast-composer refresh.");
             }
-            $urls[$i] = $url;
-            if (isset($this->fetchedTips[$this->normalizeGitUrl($url)])) {
-                // All branch tips were fetched from the remote during this invocation.
-                continue;
-            }
-            $ref = 'refs/heads/'.$branch;
-            $commands[$i] = [array_merge(
-                $this->gitMirrorPrefix($this->ensureMirror($url)),
-                ['fetch', '-q', '--depth=1', '--no-tags', '--no-write-fetch-head', '--', $url, '+'.$ref.':'.$ref]
-            ), $this->root];
+            $fetches[$i] = [$url, $branch, $package.':dev-'.$branch];
         }
+        $errors = $this->mirror->fetchBranches($fetches);
 
-        $locks = $this->lockMirrors(array_values(array_intersect_key($urls, $commands)));
-        try {
-            $results = $this->runGit($commands, 'fetching explicit dev branches', static fn ($i): string => $requests[$i][0].':dev-'.$requests[$i][1]);
-        } finally {
-            $this->unlockMirrors($locks);
-        }
         $packages = [];
         foreach ($requests as $i => [$package, $branch]) {
-            [$code, , $err] = $results[$i] ?? [0, '', ''];
             $notFound = "Branch $branch not found for $package";
-            if ($code !== 0) {
-                throw new \RuntimeException($notFound.($err !== '' ? ': '.$this->gitError($err, '') : ''));
+            if (isset($errors[$i])) {
+                throw new \RuntimeException($notFound.($errors[$i] !== '' ? ': '.$errors[$i] : ''));
             }
-            $url = $urls[$i];
-            [$sha, $meta] = $this->readBranch($url, $branch, $notFound);
+            $url = $fetches[$i][0];
+            [$sha, $meta] = $this->mirror->branch($url, $branch, $notFound);
 
             $version = $this->branchVersion($branch);
             $existing = $snapshot['packages'][$package][$version] ?? null;
@@ -411,169 +319,79 @@ final class Snapshot
         return $packages;
     }
 
+    /** Write the snapshot as a `composer` repository and a root composer.json that uses it. */
     public function writeFastComposer(array $rootConfig, array $snapshot): string
     {
         $this->ensureDir();
 
-        $packages = [];
+        $grouped = [];
         foreach ($snapshot['packages'] ?? [] as $versions) {
             foreach ($versions as $package) {
-                $packages[] = $package;
+                // A single version Composer cannot parse makes it reject the whole repository.
+                if (isset($package['name'], $package['version']) && ComposerVersion::normalize((string) $package['version']) !== null) {
+                    $grouped[$package['name']][$package['version']] = $package;
+                }
             }
         }
-
-        $this->atomicWrite(
+        JsonFile::atomicWrite(
             $this->dir().'/packages.json',
-            json_encode(['packages' => $this->groupPackages($packages)], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)."\n"
+            json_encode(['packages' => $grouped], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)."\n",
+            true
         );
 
         $config = $rootConfig;
-        $other = [];
-        foreach (($config['repositories'] ?? []) as $repo) {
-            if (!(is_array($repo) && ($repo['type'] ?? null) === 'vcs')) {
-                $other[] = $repo;
-            }
-        }
-        $config['repositories'] = array_merge([['type' => 'composer', 'url' => $this->dir()]], $other);
+        $config['repositories'] = array_merge([['type' => 'composer', 'url' => $this->dir()]], RootConfig::nonVcsRepositories($rootConfig));
 
         $path = $this->workComposerPath();
-        $this->atomicWrite(
-            $path,
-            ComposerJson::encode($config)
-        );
+        JsonFile::atomicWrite($path, ComposerJson::encode($config), true);
         return $path;
     }
 
-    public function validateChangedPackages(array $beforeLock, array $afterLock, array $rootConfig): void
+    private function initialize(array &$snapshot): void
     {
-        $before = $this->packagesByName($beforeLock);
-        $after = $this->packagesByName($afterLock);
-
-        $changed = [];
-        foreach ($after as $name => $package) {
-            $previous = $before[$name] ?? null;
-            if ($previous !== null && $this->normalize($previous) === $this->normalize($package)) {
-                continue;
-            }
-
-            $source = $package['source'] ?? [];
-            if (($source['type'] ?? null) !== 'git' || empty($source['url']) || empty($source['reference'])) {
-                continue;
-            }
-            if ($this->managedRepoUrl($source['url'], $rootConfig) === null) {
-                continue;
-            }
-            $changed[$name] = $package;
-        }
-
-        $this->prefetchExact($changed);
-        foreach ($changed as $name => $package) {
-            $source = $package['source'];
-            $meta = $this->composerAt($source['url'], $source['reference']);
-            if (!$this->metadataMatches($package, $meta)) {
-                throw new \RuntimeException(
-                    "Lock metadata mismatch for $name at {$source['reference']}; refusing to write composer.lock"
-                );
-            }
-        }
+        $snapshot['format'] = self::FORMAT;
+        $snapshot['generated_at'] ??= time();
+        $snapshot['repos'] ??= [];
+        $snapshot['packages'] ??= [];
     }
 
-    public function fixContentHash(string $lockPath, array $rootConfig): void
+    /** Rebuild a repository's versions from its mirror after the mirror was synchronized. */
+    private function hydrate(array &$snapshot, string $url, string $package): void
     {
-        $raw = is_file($lockPath) ? file_get_contents($lockPath) : false;
-        if ($raw === false) {
-            throw new \RuntimeException("Invalid lock file: $lockPath");
-        }
-        $lock = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
-        if (!is_array($lock) || !isset($lock['packages'])) {
-            throw new \RuntimeException("Invalid lock file: $lockPath");
-        }
-
-        // Patch the hash in place: re-encoding would turn Composer's empty objects ({}) into
-        // arrays ([]) and create lock-file noise.
-        $hash = $this->contentHash($rootConfig);
-        $patched = preg_replace('/("content-hash"\s*:\s*)"[^"]*"/', '${1}"'.$hash.'"', $raw, 1, $count);
-        if (!is_string($patched) || $count !== 1) {
-            $lock['content-hash'] = $hash;
-            $patched = json_encode($lock, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)."\n";
-        }
-        $this->atomicWrite($lockPath, $patched);
-    }
-
-    public function verifyLock(array $rootConfig): array
-    {
-        $lock = $this->readLock();
-        $managed = [];
-
-        foreach (array_merge($lock['packages'] ?? [], $lock['packages-dev'] ?? []) as $package) {
-            $source = $package['source'] ?? [];
-            if (($source['type'] ?? null) !== 'git' || empty($source['url']) || empty($source['reference'])) {
-                continue;
-            }
-            if ($this->managedRepoUrl($source['url'], $rootConfig) === null) {
-                continue;
-            }
-            $managed[$package['name']] = $package;
-        }
-
-        $this->prefetchExact($managed, false);
-
-        $results = [];
-        foreach ($managed as $name => $package) {
-            $source = $package['source'];
-            try {
-                $meta = $this->composerAt($source['url'], $source['reference']);
-                $results[$name] = [
-                    'sha' => $source['reference'],
-                    'reachable' => true,
-                    'metadata_match' => $this->metadataMatches($package, $meta),
-                ];
-            } catch (\Throwable) {
-                $results[$name] = [
-                    'sha' => $source['reference'],
-                    'reachable' => false,
-                    'metadata_match' => false,
-                ];
-            }
-        }
-
-        return $results;
-    }
-
-    /**
-     * Rebuild a repository's versions from its local mirror after fetchMirrors() refreshed it.
-     */
-    private function hydrateFromMirror(array &$snapshot, string $url, string $package): void
-    {
-        $remote = $this->mirrorVersions($url);
+        $refs = $this->mirror->refs($url);
         $existing = $snapshot['packages'][$package] ?? [];
         $next = [];
         $pending = [];
 
-        foreach ($remote['versions'] as $version => $ref) {
+        foreach ($this->versions($refs) as $version => $ref) {
             $current = $existing[$version] ?? null;
             if (is_array($current) && ($current['source']['reference'] ?? null) === $ref['sha']) {
                 $next[$version] = $current;
-                continue;
+            } else {
+                $pending[$version] = $ref;
             }
-            $pending[$version] = $ref;
         }
 
-        if ($pending !== []) {
-            // Every advertised tip is already in the mirror: read all composer.json files at once.
-            $this->readMirrorMetadata($url, array_column($pending, 'sha'));
-            foreach ($pending as $version => $ref) {
-                $key = $this->metadataKey($url, $ref['sha']);
-                if (!array_key_exists($key, $this->operationMetadata) || $this->operationMetadata[$key] === null) {
-                    // Like Composer, refs without a readable composer.json simply provide no version.
+        $metadata = $pending === [] ? [] : $this->mirror->metadata($url, array_column($pending, 'sha'));
+        foreach ($pending as $version => $ref) {
+            $meta = $metadata[$ref['sha']] ?? null;
+            if ($meta === null) {
+                // Like Composer, refs without a readable composer.json simply provide no version.
+                continue;
+            }
+            if ($ref['normalized'] !== null && isset($meta['version'])) {
+                // A tag whose composer.json declares a "version": Composer uses that version, and
+                // skips the tag when it does not match the tag name.
+                $declared = ComposerVersion::normalize((string) $meta['version']);
+                if ($declared === null || preg_replace('{(^dev-|[.-]?dev$)}i', '', $declared) !== $ref['normalized']) {
                     continue;
                 }
-                $meta = $this->operationMetadata[$key];
-                // Composer names every version of a VCS repository after the composer.json on its
-                // default branch (VcsRepository::preProcess), so an old tag or branch with a
-                // different "name" (renamed package, fork, typo) is still this package.
-                $next[$version] = $this->packageFromMetadata($meta, $package, $version, $url, $ref['sha']);
+                $version = (string) preg_replace('{[.-]?dev$}i', '', (string) $meta['version']);
             }
+            // Composer names every version of a VCS repository after the composer.json on its
+            // default branch (VcsRepository::preProcess), so an old tag or branch with a
+            // different "name" (renamed package, fork, typo) is still this package.
+            $next[$version] = $this->packageFromMetadata($meta, $package, $version, $url, $ref['sha']);
         }
 
         if ($next === [] && $existing !== []) {
@@ -582,581 +400,43 @@ final class Snapshot
 
         $snapshot['packages'][$package] = $next;
         $snapshot['repos'][$url]['name'] = $package;
-        $snapshot['repos'][$url]['refs'] = $remote['refs'];
+        $snapshot['repos'][$url]['refs'] = $refs;
         $snapshot['repos'][$url]['checked_at'] = time();
         unset($snapshot['repos'][$url]['last_error']);
     }
 
     /**
-     * Synchronize branch/tag tips of each repository into a persistent shallow mirror.
+     * Composer version string for every tag and branch Composer would offer, with its commit.
+     * Tags come first and the first tag wins when two resolve to the same version, as in
+     * Composer's VcsRepository.
      *
-     * This is a single network operation per repository that both lists refs and downloads
-     * any new tips, replacing the previous ls-remote + throwaway-clone fetch pair. Fetches for
-     * different repositories run concurrently.
-     *
-     * @param list<string> $urls
-     * @return array<string,string> error message per failed URL
+     * @param array{heads:array<string,string>,tags:array<string,string>} $refs
+     * @return array<string,array{sha:string,normalized:?string}> normalized is set for tags
      */
-    private function fetchMirrors(array $urls): array
+    private function versions(array $refs): array
     {
-        $commands = [];
-        foreach (array_values(array_unique($urls)) as $url) {
-            if (isset($this->fetchedTips[$this->normalizeGitUrl($url)])) {
-                // Already synchronized from the remote during this invocation.
-                continue;
-            }
-            $dir = $this->ensureMirror($url);
-            // The first fetch only takes the tips (--depth=1). Later fetches are incremental
-            // against those tips; a repeated --depth would force an extra pack round even when
-            // nothing changed.
-            $depth = is_file($dir.'/'.self::MIRROR_MARKER) ? [] : ['--depth=1'];
-            $commands[$url] = [array_merge(
-                $this->gitMirrorPrefix($dir),
-                ['fetch', '-q', '--prune', '--no-tags'],
-                $depth,
-                ['--', $url, '+refs/heads/*:refs/heads/*', '+refs/tags/*:refs/tags/*']
-            ), $this->root];
-        }
-        if ($commands === []) {
-            return [];
-        }
-
-        $locks = $this->lockMirrors(array_keys($commands));
-        try {
-            $results = $this->runGit($commands, 'fetching VCS repositories', static fn ($url): string => (string) $url);
-        } finally {
-            $this->unlockMirrors($locks);
-        }
-
-        $errors = [];
-        foreach ($results as $url => [$code, $out, $err]) {
-            if ($code !== 0) {
-                $errors[$url] = $this->gitError($err !== '' ? $err : $out, "Cannot read refs from $url");
-                continue;
-            }
-            @touch($this->mirrorDir($url).'/'.self::MIRROR_MARKER);
-            // Tips fetched just now are proven reachable on the remote during this invocation.
-            $this->fetchedTips[$this->normalizeGitUrl($url)] = true;
-        }
-        return $errors;
-    }
-
-    /** @return array{versions:array<string,array{sha:string,kind:string,ref:string}>,refs:array{heads:array<string,string>,tags:array<string,string>}} */
-    private function mirrorVersions(string $url): array
-    {
-        $out = Process::must(array_merge(
-            $this->gitMirrorPrefix($this->mirrorDir($url)),
-            ['for-each-ref', '--format=%(objectname) %(*objectname) %(refname)', 'refs/heads', 'refs/tags']
-        ), $this->root);
-
-        $heads = [];
-        $tags = [];
-        foreach (preg_split('/\R/', trim($out)) ?: [] as $line) {
-            $parts = explode(' ', $line, 3);
-            if (count($parts) !== 3) {
-                continue;
-            }
-            [$sha, $peeled, $ref] = $parts;
-            if (str_starts_with($ref, 'refs/heads/')) {
-                $heads[substr($ref, strlen('refs/heads/'))] = $sha;
-            } elseif (str_starts_with($ref, 'refs/tags/')) {
-                $tags[substr($ref, strlen('refs/tags/'))] = $peeled !== '' ? $peeled : $sha;
-            }
-        }
-
         $versions = [];
-        foreach ($heads as $branch => $sha) {
-            $versions[$this->branchVersion((string) $branch)] = ['sha' => $sha, 'kind' => 'branch', 'ref' => (string) $branch];
-        }
-        foreach ($tags as $tag => $sha) {
-            $version = $this->tagVersion((string) $tag);
-            if ($version === null) {
+        $seen = [];
+        foreach ($refs['tags'] as $tag => $sha) {
+            $parsed = ComposerVersion::fromTag((string) $tag);
+            if ($parsed === null || isset($seen[$parsed[1]])) {
                 continue;
             }
-            $versions[$version] = ['sha' => $sha, 'kind' => 'tag', 'ref' => (string) $tag];
+            $seen[$parsed[1]] = true;
+            $versions[$parsed[0]] = ['sha' => $sha, 'normalized' => $parsed[1]];
         }
-
-        if (isset($this->fetchedTips[$this->normalizeGitUrl($url)])) {
-            foreach ($versions as $ref) {
-                $this->reachable[$this->metadataKey($url, $ref['sha'])] = true;
+        foreach ($refs['heads'] as $branch => $sha) {
+            $version = ComposerVersion::fromBranch((string) $branch);
+            if ($version !== null) {
+                $versions[$version] = ['sha' => $sha, 'normalized' => null];
             }
         }
-
-        return ['versions' => $versions, 'refs' => ['heads' => $heads, 'tags' => $tags]];
-    }
-
-    private function discoverRepositoryName(array &$snapshot, string $url): void
-    {
-        $this->discoverRepositoryNames($snapshot, [$url]);
-    }
-
-    /**
-     * Package names from composer.json at each remote HEAD, as Composer determines them. Only
-     * needed for repositories that composer.lock does not map yet; fetched in parallel.
-     *
-     * @param list<string> $urls
-     */
-    private function discoverRepositoryNames(array &$snapshot, array $urls): void
-    {
-        $errors = $this->fetchMirrors($urls);
-        $commands = [];
-        foreach ($urls as $url) {
-            if (isset($errors[$url])) {
-                throw new \RuntimeException($errors[$url]);
-            }
-            $commands[$url] = [array_merge(
-                $this->gitMirrorPrefix($this->mirrorDir($url)),
-                ['fetch', '-q', '--depth=1', '--no-tags', '--no-write-fetch-head', '--', $url, '+HEAD:'.self::MIRROR_HEAD]
-            ), $this->root];
-        }
-        $locks = $this->lockMirrors($urls);
-        try {
-            $results = $this->runGit($commands, 'reading package names from remote HEAD', static fn ($url): string => (string) $url);
-        } finally {
-            $this->unlockMirrors($locks);
-        }
-
-        foreach ($urls as $url) {
-            $candidates = [self::MIRROR_HEAD.':composer.json'];
-            if (($results[$url][0] ?? 1) !== 0) {
-                // Dangling remote HEAD: fall back to the conventional default branches.
-                $candidates = ['refs/heads/main:composer.json', 'refs/heads/master:composer.json'];
-            }
-            $name = null;
-            foreach ($this->catFile($this->mirrorDir($url), $candidates) as $object) {
-                $name = $this->decodeComposerJson($object)['name'] ?? null;
-                if (is_string($name) && $name !== '') {
-                    break;
-                }
-            }
-            if (!is_string($name) || $name === '') {
-                throw new \RuntimeException("composer.json at $url HEAD has no package name");
-            }
-            $snapshot['repos'][$url]['name'] = $name;
-        }
-    }
-
-    private function metadataKey(string $url, string $sha): string
-    {
-        return hash('sha256', $this->normalizeGitUrl($url)).':'.$sha;
-    }
-
-    /**
-     * composer.json at an exact SHA that was obtained from the remote during this invocation.
-     */
-    private function composerAt(string $url, string $sha): array
-    {
-        $key = $this->metadataKey($url, $sha);
-        if (!isset($this->reachable[$key])) {
-            $this->fetchExact([$url => [$sha]]);
-        }
-        if (!array_key_exists($key, $this->operationMetadata)) {
-            $this->readMirrorMetadata($url, [$sha]);
-        }
-
-        $data = $this->operationMetadata[$key] ?? null;
-        if (!is_array($data)) {
-            throw new \RuntimeException('Invalid composer.json at '.$sha);
-        }
-        return $data;
-    }
-
-    /**
-     * Fetch the exact source SHAs of the given lock packages in parallel (one fetch per repo).
-     *
-     * @param array<string,array> $packages
-     */
-    private function prefetchExact(array $packages, bool $throw = true): void
-    {
-        $wanted = [];
-        foreach ($packages as $package) {
-            $url = $package['source']['url'];
-            $sha = $package['source']['reference'];
-            if (!isset($this->reachable[$this->metadataKey($url, $sha)])) {
-                $wanted[$url][] = $sha;
-            }
-        }
-        $errors = $this->fetchExact($wanted, false);
-        if ($throw && $errors !== []) {
-            throw new \RuntimeException(reset($errors));
-        }
-    }
-
-    /**
-     * @param array<string,list<string>> $shasByUrl
-     * @return array<string,string> error message per failed URL
-     */
-    private function fetchExact(array $shasByUrl, bool $throw = true): array
-    {
-        $commands = [];
-        $chunks = [];
-        foreach ($shasByUrl as $url => $shas) {
-            $shas = array_values(array_unique(array_filter($shas, static fn ($sha): bool => is_string($sha) && $sha !== '')));
-            if ($shas === []) {
-                continue;
-            }
-            $dir = $this->ensureMirror($url);
-            // Keep command lines bounded while amortizing SSH/TLS setup across many SHAs.
-            foreach (array_chunk($shas, 64) as $i => $chunk) {
-                $commands[$url.'#'.$i] = [array_merge(
-                    $this->gitMirrorPrefix($dir),
-                    ['fetch', '-q', '--depth=1', '--no-tags', '--no-write-fetch-head', '--', $url],
-                    $chunk
-                ), $this->root];
-                $chunks[$url.'#'.$i] = [$url, $chunk];
-            }
-        }
-
-        $locks = $this->lockMirrors(array_values(array_unique(array_column($chunks, 0))));
-        try {
-            $results = $this->runGit($commands, 'fetching exact locked commits', static fn ($id): string => $chunks[$id][0].' ('.count($chunks[$id][1]).' SHA)');
-        } finally {
-            $this->unlockMirrors($locks);
-        }
-
-        $errors = [];
-        foreach ($results as $id => [$code, $out, $err]) {
-            [$url, $chunk] = $chunks[$id];
-            if ($code !== 0) {
-                $errors[$url] = $this->gitError($err !== '' ? $err : $out, 'Cannot fetch '.implode(', ', $chunk)." from $url");
-                continue;
-            }
-            foreach ($chunk as $sha) {
-                $this->reachable[$this->metadataKey($url, $sha)] = true;
-            }
-        }
-
-        if ($throw && $errors !== []) {
-            throw new \RuntimeException(reset($errors));
-        }
-        return $errors;
-    }
-
-    /**
-     * Branch tip and its composer.json, read from the mirror right after fetching the branch.
-     *
-     * @return array{0:string,1:array}
-     */
-    private function readBranch(string $url, string $branch, string $notFoundMessage): array
-    {
-        $ref = 'refs/heads/'.$branch;
-        $objects = $this->catFile($this->mirrorDir($url), [$ref.'^{commit}', $ref.':composer.json']);
-        $sha = $objects[0]['oid'] ?? null;
-        if (!is_string($sha) || ($objects[0]['type'] ?? null) !== 'commit') {
-            throw new \RuntimeException($notFoundMessage);
-        }
-
-        $key = $this->metadataKey($url, $sha);
-        $this->reachable[$key] = true;
-        $this->operationMetadata[$key] = $this->withReleaseDate($this->decodeComposerJson($objects[1] ?? null), $objects[0]);
-        if ($this->operationMetadata[$key] === null) {
-            throw new \RuntimeException('Invalid composer.json at '.$sha);
-        }
-        return [$sha, $this->operationMetadata[$key]];
-    }
-
-    /** @param list<string> $shas */
-    private function readMirrorMetadata(string $url, array $shas): void
-    {
-        $shas = array_values(array_unique(array_filter(
-            $shas,
-            fn ($sha): bool => is_string($sha) && $sha !== '' && !array_key_exists($this->metadataKey($url, $sha), $this->operationMetadata)
-        )));
-        if ($shas === []) {
-            return;
-        }
-
-        $specs = [];
-        foreach ($shas as $sha) {
-            $specs[] = $sha.':composer.json';
-            $specs[] = $sha.'^{commit}';
-        }
-        $objects = $this->catFile($this->mirrorDir($url), $specs);
-        foreach ($shas as $i => $sha) {
-            $this->operationMetadata[$this->metadataKey($url, $sha)] = $this->withReleaseDate(
-                $this->decodeComposerJson($objects[2 * $i] ?? null),
-                $objects[2 * $i + 1] ?? null
-            );
-        }
-    }
-
-    /**
-     * Same release date Composer's GitDriver records: the commit author date, unless
-     * composer.json declares its own "time".
-     */
-    private function withReleaseDate(?array $meta, ?array $commit): ?array
-    {
-        if ($meta === null || (isset($meta['time']) && is_string($meta['time']))) {
-            return $meta;
-        }
-        if ($commit !== null && $commit['type'] === 'commit'
-            && preg_match('/^author .* (\d+) [+-]\d{4}$/m', $commit['content'], $m)) {
-            $meta['time'] = (new \DateTimeImmutable('@'.$m[1]))->setTimezone(new \DateTimeZone('UTC'))->format(DATE_RFC3339);
-        }
-        return $meta;
-    }
-
-    /**
-     * Read many objects with one `git cat-file --batch` process.
-     *
-     * @param list<string> $specs
-     * @return list<?array{oid:string,type:string,content:string}>
-     */
-    private function catFile(string $dir, array $specs): array
-    {
-        [$code, $out, $err] = Process::runWithInput(
-            array_merge($this->gitMirrorPrefix($dir), ['cat-file', '--batch']),
-            implode("\n", $specs)."\n",
-            $this->root
-        );
-        if ($code !== 0) {
-            throw new \RuntimeException(trim($err) ?: 'git cat-file failed in '.$dir);
-        }
-
-        $result = [];
-        $offset = 0;
-        $length = strlen($out);
-        foreach ($specs as $i => $_) {
-            $eol = strpos($out, "\n", $offset);
-            if ($eol === false) {
-                $result[$i] = null;
-                continue;
-            }
-            $header = substr($out, $offset, $eol - $offset);
-            $offset = $eol + 1;
-            if (!preg_match('/^([0-9a-f]{40,64}) (\S+) (\d+)$/', $header, $m)) {
-                // "<spec> missing" / "<spec> ambiguous": no object for this spec.
-                $result[$i] = null;
-                continue;
-            }
-            $size = (int) $m[3];
-            $result[$i] = ['oid' => $m[1], 'type' => $m[2], 'content' => (string) substr($out, $offset, $size)];
-            $offset = min($length, $offset + $size + 1);
-        }
-        return $result;
-    }
-
-    private function decodeComposerJson(?array $object): ?array
-    {
-        if ($object === null || $object['type'] !== 'blob') {
-            return null;
-        }
-        try {
-            $data = json_decode($object['content'], true, 512, JSON_THROW_ON_ERROR);
-        } catch (\JsonException) {
-            return null;
-        }
-        return is_array($data) ? $data : null;
-    }
-
-    /**
-     * Mirrors are shared by every project that uses the same repository URL, so a new clone or
-     * worktree of a project does not start from zero.
-     */
-    private function mirrorDir(string $url): string
-    {
-        return $this->baseDir.'/mirrors/'.substr(hash('sha256', $this->normalizeGitUrl($url)), 0, 24).'.git';
-    }
-
-    private function ensureMirror(string $url): string
-    {
-        $dir = $this->mirrorDir($url);
-        if (!is_file($dir.'/HEAD')) {
-            $parent = dirname($dir);
-            if (!is_dir($parent) && !mkdir($parent, 0700, true) && !is_dir($parent)) {
-                throw new \RuntimeException("Cannot create mirror directory $parent");
-            }
-            Process::must(['git', 'init', '-q', '--bare', $dir], $this->root);
-        }
-        return $dir;
-    }
-
-    /**
-     * Serialize fetches into a shared mirror across processes (other projects may use it).
-     * Locks are taken in a stable order so concurrent processes cannot deadlock.
-     *
-     * @param list<string> $urls
-     * @return list<resource>
-     */
-    private function lockMirrors(array $urls): array
-    {
-        $dirs = array_values(array_unique(array_map(fn (string $url): string => $this->mirrorDir($url), $urls)));
-        sort($dirs);
-        $handles = [];
-        foreach ($dirs as $dir) {
-            $handle = @fopen($dir.'.lock', 'c');
-            if ($handle === false) {
-                continue;
-            }
-            if (!flock($handle, LOCK_EX | LOCK_NB)) {
-                $this->log('waiting for another fast-composer process that is fetching into '.basename($dir).' ...');
-                flock($handle, LOCK_EX);
-            }
-            $handles[] = $handle;
-        }
-        return $handles;
-    }
-
-    /** @param list<resource> $handles */
-    private function unlockMirrors(array $handles): void
-    {
-        foreach ($handles as $handle) {
-            flock($handle, LOCK_UN);
-            fclose($handle);
-        }
-    }
-
-    /** @return list<string> */
-    private function gitMirrorPrefix(string $dir): array
-    {
-        // Mirrors are private metadata caches: never trigger background maintenance or gc.
-        return ['git', '-c', 'maintenance.auto=false', '-c', 'gc.auto=0', '-c', 'fetch.writeCommitGraph=false', '--git-dir='.$dir];
-    }
-
-    private function metadataMatches(array $lockedPackage, array $sourceComposer): bool
-    {
-        $lockedName = strtolower((string) ($lockedPackage['name'] ?? ''));
-        if ($lockedName !== strtolower((string) ($sourceComposer['name'] ?? ''))) {
-            // A version may carry an old/other "name"; Composer then uses the name from the
-            // repository's default branch. Accept exactly that, nothing else.
-            $url = $lockedPackage['source']['url'] ?? null;
-            if (!is_string($url) || $lockedName === '' || $lockedName !== strtolower($this->repositoryPackageName($url))) {
-                return false;
-            }
-        }
-        return $this->metadataForCompare($lockedPackage) === $this->metadataForCompare($sourceComposer);
-    }
-
-    /** Package name Composer assigns to a VCS repository: composer.json name at the remote HEAD. */
-    private function repositoryPackageName(string $url): string
-    {
-        $key = $this->normalizeGitUrl($url);
-        if (!isset($this->repositoryNames[$key])) {
-            $probe = [];
-            $this->discoverRepositoryNames($probe, [$url]);
-            $this->repositoryNames[$key] = (string) $probe['repos'][$url]['name'];
-        }
-        return $this->repositoryNames[$key];
-    }
-
-    private function metadataForCompare(array $package): array
-    {
-        $result = ['type' => $package['type'] ?? 'library'];
-        foreach (self::VERIFY as $key) {
-            if ($key === 'type') {
-                continue;
-            }
-            if (array_key_exists($key, $package)) {
-                $result[$key] = $package[$key];
-            }
-        }
-        return $this->normalize($result);
-    }
-
-    private function packagesByName(array $lock): array
-    {
-        $result = [];
-        foreach (array_merge($lock['packages'] ?? [], $lock['packages-dev'] ?? []) as $package) {
-            if (isset($package['name'])) {
-                $result[$package['name']] = $package;
-            }
-        }
-        return $result;
-    }
-
-    private function contentHash(array $content): string
-    {
-        $relevantKeys = [
-            'name', 'version', 'require', 'require-dev', 'conflict', 'replace', 'provide',
-            'minimum-stability', 'prefer-stable', 'repositories', 'extra',
-        ];
-
-        $relevant = [];
-        foreach (array_intersect($relevantKeys, array_keys($content)) as $key) {
-            $relevant[$key] = $content[$key];
-        }
-        if (isset($content['config']['platform'])) {
-            $relevant['config']['platform'] = $content['config']['platform'];
-        }
-        ksort($relevant);
-
-        return hash('md5', json_encode($relevant, JSON_THROW_ON_ERROR));
-    }
-
-    /** @return list<string> */
-    private function managedRepositories(array $rootConfig): array
-    {
-        $urls = [];
-        foreach (($rootConfig['repositories'] ?? []) as $repo) {
-            if (is_array($repo) && ($repo['type'] ?? null) === 'vcs' && is_string($repo['url'] ?? null)) {
-                $urls[] = $repo['url'];
-            }
-        }
-        return $urls;
-    }
-
-    private function repoConfigHash(array $rootConfig): string
-    {
-        $repos = [];
-        foreach (($rootConfig['repositories'] ?? []) as $repo) {
-            if (!is_array($repo) || ($repo['type'] ?? null) !== 'vcs' || !is_string($repo['url'] ?? null)) {
-                continue;
-            }
-            $copy = $repo;
-            $copy['url'] = $this->normalizeGitUrl($repo['url']);
-            $repos[] = $this->normalize($copy);
-        }
-        usort($repos, static fn (array $a, array $b): int => ($a['url'] ?? '') <=> ($b['url'] ?? ''));
-        return hash('sha256', json_encode($repos, JSON_THROW_ON_ERROR));
-    }
-
-    private function managedRepoUrl(string $sourceUrl, array $rootConfig): ?string
-    {
-        $source = $this->normalizeGitUrl($sourceUrl);
-        foreach (($rootConfig['repositories'] ?? []) as $repo) {
-            if (!is_array($repo) || ($repo['type'] ?? null) !== 'vcs' || !is_string($repo['url'] ?? null)) {
-                continue;
-            }
-            if ($this->normalizeGitUrl($repo['url']) === $source) {
-                return $repo['url'];
-            }
-        }
-        return null;
-    }
-
-    private function normalizeGitUrl(string $url): string
-    {
-        $url = trim($url);
-        $local = realpath($url);
-        if ($local !== false) {
-            return rtrim($local, '/\\');
-        }
-
-        if (preg_match('~(?:https?://|ssh://git@|git@)?github\.com[/:]([^/]+)/([^/]+?)(?:\.git)?/?$~i', $url, $m)) {
-            return 'github.com/'.strtolower($m[1]).'/'.strtolower(preg_replace('/\.git$/i', '', $m[2]));
-        }
-
-        return rtrim(preg_replace('/\.git$/i', '', $url), '/\\');
+        return $versions;
     }
 
     private function branchVersion(string $branch): string
     {
-        $numeric = preg_replace('/^v(?=\d)/i', '', $branch);
-        if (preg_match('/^\d+(?:\.\d+)*\.x$/i', $numeric)) {
-            return $numeric.'-dev';
-        }
-        if (preg_match('/^\d+(?:\.\d+)*$/', $numeric)) {
-            return $numeric.'.x-dev';
-        }
-        return 'dev-'.$branch;
-    }
-
-    private function tagVersion(string $tag): ?string
-    {
-        $version = preg_replace('/^v(?=\d)/i', '', $tag);
-        return preg_match('/^\d+(?:\.\d+){0,3}(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?$/', $version)
-            ? $version
-            : null;
+        return ComposerVersion::fromBranch($branch) ?? 'dev-'.$branch;
     }
 
     private function packagePatternMatches(string $pattern, string $package): bool
@@ -1191,59 +471,12 @@ final class Snapshot
     private function cleanPackage(array $package): array
     {
         $result = [];
-        foreach (self::KEEP as $key) {
-            if (array_key_exists($key, $package)) {
-                $result[$key] = $package[$key];
-            }
-        }
-        foreach (['name', 'version', 'source', 'dist'] as $key) {
+        foreach (array_merge(self::KEEP, ['name', 'version', 'source', 'dist']) as $key) {
             if (array_key_exists($key, $package)) {
                 $result[$key] = $package[$key];
             }
         }
         return $result;
-    }
-
-    private function groupPackages(array $packages): array
-    {
-        $grouped = [];
-        foreach ($packages as $package) {
-            if (isset($package['name'], $package['version'])) {
-                $grouped[$package['name']][$package['version']] = $package;
-            }
-        }
-        return $grouped;
-    }
-
-    private function normalize(mixed $value): mixed
-    {
-        if (!is_array($value)) {
-            return $value;
-        }
-        if (array_is_list($value)) {
-            return array_map(fn ($item) => $this->normalize($item), $value);
-        }
-        ksort($value);
-        foreach ($value as $key => $item) {
-            $value[$key] = $this->normalize($item);
-        }
-        return $value;
-    }
-
-    private function readJson(string $path, array $default): array
-    {
-        if (!is_file($path)) {
-            return $default;
-        }
-        $raw = file_get_contents($path);
-        if ($raw === false) {
-            throw new \RuntimeException("Cannot read JSON: $path");
-        }
-        $data = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
-        if (!is_array($data)) {
-            throw new \RuntimeException("Invalid JSON: $path");
-        }
-        return $data;
     }
 
     private function ensureDir(): void
@@ -1254,32 +487,17 @@ final class Snapshot
         @chmod($this->dir(), 0700);
     }
 
-    private function atomicWrite(string $path, string $contents): void
-    {
-        $dir = dirname($path);
-        if (!is_dir($dir) && !mkdir($dir, 0700, true) && !is_dir($dir)) {
-            throw new \RuntimeException("Cannot create directory $dir");
-        }
-        $tmp = $path.'.tmp-'.bin2hex(random_bytes(4));
-        if (file_put_contents($tmp, $contents, LOCK_EX) === false) {
-            throw new \RuntimeException("Cannot write $tmp");
-        }
-        @chmod($tmp, 0600);
-        if (!rename($tmp, $path)) {
-            @unlink($tmp);
-            throw new \RuntimeException("Cannot replace $path");
-        }
-    }
-
-    private function cacheBaseDir(): string
+    /**
+     * Deliberately outside Composer's cache-dir: `composer clear-cache` must not throw away
+     * the snapshot and mirrors.
+     */
+    private static function cacheBaseDir(): string
     {
         $override = getenv('FAST_COMPOSER_CACHE_DIR');
         if (is_string($override) && trim($override) !== '') {
             return rtrim($override, '/\\');
         }
 
-        // Deliberately outside Composer's cache-dir: `composer clear-cache` must not throw away
-        // the snapshot and mirrors.
         if (PHP_OS_FAMILY === 'Windows') {
             $local = getenv('LOCALAPPDATA');
             if (is_string($local) && trim($local) !== '') {
@@ -1303,10 +521,5 @@ final class Snapshot
         }
 
         return $home.'/.cache/fast-composer';
-    }
-
-    private function isAbsolutePath(string $path): bool
-    {
-        return str_starts_with($path, '/') || preg_match('~^[A-Za-z]:[\\\\/]~', $path) === 1;
     }
 }

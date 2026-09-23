@@ -32,7 +32,7 @@ final class Application
         }
 
         try {
-            $rootCfg = $this->readJson($root.'/composer.json');
+            $rootCfg = JsonFile::read($root.'/composer.json');
         } catch (\Throwable $e) {
             fwrite(STDERR, '[fast-composer] '.$e->getMessage()."\n");
             return 2;
@@ -56,7 +56,8 @@ final class Application
 
             if ($cmd === 'verify') {
                 $bad = 0;
-                foreach ($snapshot->verifyLock($rootCfg) as $name => $result) {
+                $validator = new LockValidator($snapshot->mirror());
+                foreach ($validator->verify($snapshot->readLock(), $rootCfg) as $name => $result) {
                     if (!$result['reachable']) {
                         $status = 'MISSING';
                         $bad++;
@@ -96,18 +97,18 @@ final class Application
 
             // These modes intentionally have semantics beyond an optimistic lock update. Preserve
             // exact Composer behavior rather than partially emulating them.
-            if (($cmd === 'require' && $this->hasFlag($args, '--no-update'))
-                || ($cmd === 'update' && ($this->hasFlag($args, '--lock') || $this->hasFlag($args, '--bump-after-update')))) {
+            if (($cmd === 'require' && CommandLine::hasFlag($args, '--no-update'))
+                || ($cmd === 'update' && (CommandLine::hasFlag($args, '--lock') || CommandLine::hasFlag($args, '--bump-after-update')))) {
                 return $this->delegateComposer($args, $root);
             }
 
-            $solveArgs = $this->lockOnlyArgs($args);
+            $solveArgs = CommandLine::lockOnly($args);
             $state = $snapshot->load();
             if (!$state || !$snapshot->isCompatible($state, $rootCfg)) {
                 // No regular Composer solve needed: fetch the repositories the snapshot does not
                 // cover yet (all of them on a first run, only added ones after a change of
                 // "repositories") in parallel, then continue on the fast path.
-                $pending = $this->vcsRepositoryCount($rootCfg) - $this->syncedRepositoryCount($state, $rootCfg);
+                $pending = count(RootConfig::vcsUrls($rootCfg)) - $this->syncedRepositoryCount($state, $rootCfg);
                 $this->log(sprintf(
                     "%s: synchronizing %d VCS repositories (one parallel git fetch each)",
                     $state ? 'repositories changed' : 'no snapshot yet',
@@ -127,7 +128,7 @@ final class Application
                 $this->log("refreshing requested VCS repositories");
                 $this->refreshForRequire($snapshot, $state, $args);
             } else {
-                $targets = $this->packageArguments(array_slice($args, 1));
+                $targets = CommandLine::packageArguments(array_slice($args, 1));
                 if ($targets === []) {
                     $count = $snapshot->refreshAllIfStale($state, $rootCfg, $ttl);
                     if ($count > 0) {
@@ -177,28 +178,12 @@ final class Application
 
         $this->log("solving dependency graph with Composer from the cached snapshot (lock only; Composer's own output follows; its security audit queries packagist.org unless --no-audit)");
         $solveStart = microtime(true);
-        $env = ['COMPOSER' => $fastComposer] + $this->solverEnvironment($rootCfg, $root, $snapshot);
-        $code = InProcessComposer::run($args, $root, $env);
-        if ($code === null) {
-            $previous = [];
-            try {
-                foreach ($env as $name => $value) {
-                    $previous[$name] = getenv($name);
-                    putenv($name.'='.$value);
-                }
-                [$code] = Process::run(array_merge(['composer'], $args), $root, true);
-            } finally {
-                foreach ($previous as $name => $value) {
-                    $value === false ? putenv($name) : putenv($name.'='.$value);
-                }
-            }
-        }
-
+        $code = ComposerSolver::run($args, $root, $fastComposer, $rootCfg, $snapshot->dir().'/packages.json');
         if ($code !== 0) {
             return $code;
         }
 
-        if ($this->hasFlag($args, '--dry-run')) {
+        if (CommandLine::hasFlag($args, '--dry-run')) {
             $this->log("dry-run; real composer files unchanged");
             return 0;
         }
@@ -208,7 +193,7 @@ final class Application
         }
 
         if (($args[0] ?? null) === 'require') {
-            $temporaryRoot = $this->readJson($fastComposer);
+            $temporaryRoot = JsonFile::read($fastComposer);
             foreach (['require', 'require-dev'] as $key) {
                 if (isset($temporaryRoot[$key])) {
                     $rootCfg[$key] = $temporaryRoot[$key];
@@ -225,8 +210,8 @@ final class Application
 
         $this->log(sprintf("Composer solve finished (%.1fs); validating changed VCS packages against their exact locked SHA", microtime(true) - $solveStart));
         $afterLock = $snapshot->readLock($fastLock);
-        $snapshot->validateChangedPackages($beforeLock, $afterLock, $rootCfg);
-        $snapshot->fixContentHash($fastLock, $rootCfg);
+        (new LockValidator($snapshot->mirror()))->validateChanged($beforeLock, $afterLock, $rootCfg);
+        LockFile::fixContentHash($fastLock, $rootCfg);
         $this->log("validation complete; publishing composer files");
 
         $newComposer = ($args[0] ?? null) === 'require'
@@ -246,47 +231,6 @@ final class Application
     }
 
     /**
-     * Environment that removes work from the inner Composer run without changing its result.
-     *
-     * @return array<string,string>
-     */
-    private function solverEnvironment(array $rootCfg, string $root, Snapshot $snapshot): array
-    {
-        $env = [];
-
-        // Composer guesses the root package version by probing git/hg/fossil/svn in the project,
-        // which costs several subprocesses. The lock file never records the root version, so it
-        // only affects the solve when something references the root package itself. Pin it
-        // only when nothing can: no "self.version" constraints and no package mentioning the
-        // root package name.
-        if (getenv('COMPOSER_ROOT_VERSION') === false && !isset($rootCfg['version'])) {
-            $rootName = is_string($rootCfg['name'] ?? null) ? strtolower($rootCfg['name']) : null;
-            $composerJson = (string) @file_get_contents($root.'/composer.json');
-            $safe = !str_contains($composerJson, 'self.version');
-            if ($safe && $rootName !== null) {
-                foreach ([$snapshot->dir().'/packages.json', $root.'/composer.lock'] as $path) {
-                    $contents = is_file($path) ? @file_get_contents($path) : '';
-                    if ($contents === false || str_contains(strtolower($contents), '"'.$rootName.'"')) {
-                        $safe = false;
-                        break;
-                    }
-                }
-            }
-            if ($safe) {
-                $env['COMPOSER_ROOT_VERSION'] = 'dev-main';
-            }
-        }
-
-        // Without a terminal, Symfony Console shells out to `stty` twice to size output.
-        if (getenv('COLUMNS') === false && !(function_exists('stream_isatty') && @stream_isatty(STDOUT))) {
-            $env['COLUMNS'] = '120';
-            $env['LINES'] = '50';
-        }
-
-        return $env;
-    }
-
-    /**
      * Lock-only updates never install, so Composer never asks "Do you trust this plugin?". A
      * later non-interactive `composer install` (CI) would then refuse the plugin: say so now.
      */
@@ -298,7 +242,7 @@ final class Application
         }
         $allowed = is_array($allowed) ? $allowed : [];
 
-        foreach (array_merge($lock['packages'] ?? [], $lock['packages-dev'] ?? []) as $package) {
+        foreach (LockFile::packages($lock) as $package) {
             $name = $package['name'] ?? null;
             if (($package['type'] ?? null) !== 'composer-plugin' || !is_string($name)) {
                 continue;
@@ -320,12 +264,12 @@ final class Application
     {
         $branches = [];
         $names = [];
-        foreach ($this->packageArguments(array_slice($args, 1)) as $spec) {
-            [$name, $constraint] = $this->splitPackageSpec($spec);
+        foreach (CommandLine::packageArguments(array_slice($args, 1)) as $spec) {
+            [$name, $constraint] = CommandLine::splitPackageSpec($spec);
             if (!$this->isManagedPackage($state, $name)) {
                 continue;
             }
-            $branch = is_string($constraint) ? $this->explicitDevBranch($constraint) : null;
+            $branch = is_string($constraint) ? CommandLine::explicitDevBranch($constraint) : null;
             if ($branch !== null) {
                 $branches[] = [$name, $branch];
             } else {
@@ -340,28 +284,16 @@ final class Application
         }
     }
 
-    /**
-     * Split "vendor/name:constraint" (also "=" or a space, as Composer accepts).
-     *
-     * @return array{0:string,1:?string}
-     */
-    private function splitPackageSpec(string $spec): array
-    {
-        $parts = preg_split('/[:= ]/', trim($spec), 2) ?: [$spec];
-        $constraint = isset($parts[1]) ? trim($parts[1]) : null;
-        return [strtolower($parts[0]), $constraint === '' ? null : $constraint];
-    }
-
     /** @param list<string> $targets */
     private function refreshTargetedUpdates(Snapshot $snapshot, array &$state, array $rootCfg, array $targets): int
     {
         $branches = [];
         $patterns = [];
         foreach ($targets as $spec) {
-            [$name, $temporaryConstraint] = $this->splitPackageSpec($spec);
+            [$name, $temporaryConstraint] = CommandLine::splitPackageSpec($spec);
             if ($this->isManagedPackage($state, $name)) {
                 $constraint = $temporaryConstraint ?? $this->rootConstraintForPackage($rootCfg, $name);
-                $branch = is_string($constraint) ? $this->explicitDevBranch($constraint) : null;
+                $branch = is_string($constraint) ? CommandLine::explicitDevBranch($constraint) : null;
                 if ($branch !== null) {
                     $branches[] = [$name, $branch];
                     continue;
@@ -400,7 +332,7 @@ final class Application
                 if (!is_string($name) || !is_string($constraint) || !$this->isManagedPackage($state, $name)) {
                     continue;
                 }
-                $branch = $this->explicitDevBranch($constraint);
+                $branch = CommandLine::explicitDevBranch($constraint);
                 if ($branch === null) {
                     continue;
                 }
@@ -409,37 +341,6 @@ final class Application
         }
         $snapshot->ensureBranches($state, $requests);
         return count($requests);
-    }
-
-    private function explicitDevBranch(string $constraint): ?string
-    {
-        $constraint = trim($constraint);
-        if (!str_starts_with($constraint, 'dev-')) {
-            return null;
-        }
-
-        $token = preg_split('/\s+/', $constraint, 2)[0];
-        $token = preg_replace('/@[^@]+$/', '', $token);
-        if (!is_string($token) || !str_starts_with($token, 'dev-') || strlen($token) <= 4) {
-            return null;
-        }
-        return substr($token, 4);
-    }
-
-    /** @return list<string> */
-    private function packageArguments(array $args): array
-    {
-        $result = [];
-        foreach ($args as $arg) {
-            if (!is_string($arg) || $arg === '' || str_starts_with($arg, '-')) {
-                continue;
-            }
-            $name = preg_split('/[:= ]/', $arg, 2)[0];
-            if (str_contains($name, '/')) {
-                $result[] = $arg;
-            }
-        }
-        return array_values(array_unique($result));
     }
 
     private function isManagedPackage(array $state, string $package): bool
@@ -455,20 +356,8 @@ final class Application
     private function syncedRepositoryCount(array $state, array $rootCfg): int
     {
         $count = 0;
-        foreach (($rootCfg['repositories'] ?? []) as $repo) {
-            if (is_array($repo) && ($repo['type'] ?? null) === 'vcs' && is_string($repo['url'] ?? null)
-                && !empty($state['repos'][$repo['url']]['checked_at'])) {
-                $count++;
-            }
-        }
-        return $count;
-    }
-
-    private function vcsRepositoryCount(array $rootCfg): int
-    {
-        $count = 0;
-        foreach (($rootCfg['repositories'] ?? []) as $repo) {
-            if (is_array($repo) && ($repo['type'] ?? null) === 'vcs' && is_string($repo['url'] ?? null)) {
+        foreach (RootConfig::vcsUrls($rootCfg) as $url) {
+            if (!empty($state['repos'][$url]['checked_at'])) {
                 $count++;
             }
         }
@@ -509,14 +398,6 @@ final class Application
         return $code;
     }
 
-    private function lockOnlyArgs(array $args): array
-    {
-        if (!$this->hasFlag($args, '--no-install')) {
-            $args[] = '--no-install';
-        }
-        return $args;
-    }
-
     private function ttl(): int
     {
         $value = getenv('FAST_COMPOSER_TTL');
@@ -527,16 +408,6 @@ final class Application
             throw new \RuntimeException('FAST_COMPOSER_TTL must be a non-negative integer number of seconds');
         }
         return (int) $value;
-    }
-
-    private function hasFlag(array $args, string $flag): bool
-    {
-        foreach ($args as $arg) {
-            if ($arg === $flag || str_starts_with((string) $arg, $flag.'=')) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private function acquireOperationLock(Snapshot $snapshot)
@@ -572,43 +443,18 @@ final class Application
 
         try {
             if ($composerContents !== null) {
-                $this->atomicWrite($composerPath, $composerContents);
+                JsonFile::atomicWrite($composerPath, $composerContents);
             }
-            $this->atomicWrite($lockPath, $lockContents);
+            JsonFile::atomicWrite($lockPath, $lockContents);
         } catch (\Throwable $e) {
-            $this->atomicWrite($composerPath, $oldComposer);
+            JsonFile::atomicWrite($composerPath, $oldComposer);
             if ($hadLock && is_string($oldLock)) {
-                $this->atomicWrite($lockPath, $oldLock);
+                JsonFile::atomicWrite($lockPath, $oldLock);
             } elseif (!$hadLock) {
                 @unlink($lockPath);
             }
             throw $e;
         }
-    }
-
-    private function atomicWrite(string $path, string $contents): void
-    {
-        $tmp = $path.'.fast-composer-'.bin2hex(random_bytes(4));
-        if (file_put_contents($tmp, $contents, LOCK_EX) === false) {
-            throw new \RuntimeException("Cannot write $tmp");
-        }
-        if (!rename($tmp, $path)) {
-            @unlink($tmp);
-            throw new \RuntimeException("Cannot replace $path");
-        }
-    }
-
-    private function readJson(string $path): array
-    {
-        $raw = file_get_contents($path);
-        if ($raw === false) {
-            throw new \RuntimeException("Cannot read $path");
-        }
-        $data = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
-        if (!is_array($data)) {
-            throw new \RuntimeException("Invalid JSON: $path");
-        }
-        return $data;
     }
 
     private function help(): void

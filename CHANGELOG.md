@@ -28,8 +28,14 @@
 - `fast-composer require` failed with a schema error on a composer.json containing an empty object such as `"require": {}` (it was re-encoded as `[]`); empty objects are now preserved.
 - `require`/`update` with several packages refresh their repositories in one parallel batch (was one after another); `vendor/name=constraint` is recognized like `vendor/name:constraint`.
 - `require` keeps `config.allow-plugins` decisions Composer wrote to its working copy.
+- Tags Composer cannot parse (e.g. `0.3-no-vendor`) are skipped like Composer does. Before, they reached the snapshot and Composer failed with `Invalid version string` for the whole snapshot repository. Version names now follow Composer's VcsRepository exactly (ported `VersionParser` rules): `v1.2.0` stays `v1.2.0` in the lock, `release-` prefixes are dropped, tags with `-dev` are skipped, the first of two tags resolving to the same version wins, a `version` in a tag's composer.json is honored, and branches such as `v2.x` / `4.*` / `feat#1` get Composer's names. A version Composer cannot parse is never written to the snapshot repository.
 - "Repository package name mismatch": a tag/branch whose `composer.json` has a different `name` (renamed package, fork, typo, different case) aborted the refresh. Like Composer, every version of a VCS repository now takes the name from its default branch. Lock validation accepts such a version only under exactly that name.
 - Branches/tags without a `composer.json` (e.g. `gh-pages`) are skipped like Composer does instead of failing the refresh.
+
+### Internal
+
+- Split the 1300-line `Snapshot` into `Snapshot` (state), `GitMirror` (all network Git access), `LockValidator` (safety contract) and small helpers (`RootConfig`, `LockFile`, `JsonFile`, `GitUrl`); moved solver invocation and argument parsing out of `Application` (`ComposerSolver`, `CommandLine`). No behavior change.
+- Unit tests split into `tests/unit/*.php`, each run in isolation by `tests/run.php`.
 
 ### Benchmarks
 
@@ -37,7 +43,7 @@
 
 ### Upgrade note
 
-- Snapshot format bumped to 4 and the cache location changed: the first invocation after upgrading synchronizes once. The old `<composer cache-dir>/fast-composer` directory can be deleted.
+- Snapshot format bumped to 5 (version naming now matches Composer) and the cache location changed: the first invocation after upgrading synchronizes once. The old `<composer cache-dir>/fast-composer` directory can be deleted.
 
 ## 0.1.0 - 2026-09-16
 
