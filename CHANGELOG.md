@@ -42,6 +42,8 @@
 - Each VCS repository becomes its own local `composer` repository in the same position with its `only` / `exclude` / `canonical` options, so repository priority and filters behave as in Composer.
 - The default branch is the remote HEAD (`git ls-remote --symref`, fetched in the same parallel batch and remembered per mirror; refreshed by `fast-composer refresh`). Composer asks the remote for it on every run.
 
+- HTTPS VCS repositories use the credentials Composer would use (`auth.json` of project and `COMPOSER_HOME`, `COMPOSER_AUTH`; GitHub/GitLab/Bitbucket/http-basic/bearer shaped like Composer's Git utility), passed to Git as an `Authorization` header via `GIT_CONFIG_*` environment variables — not on disk, not in the process list. Falls back to Git's own authentication when rejected.
+
 ### Internal
 
 - Split the 1300-line `Snapshot` into `Snapshot` (state), `GitMirror` (all network Git access), `LockValidator` (safety contract) and small helpers (`RootConfig`, `LockFile`, `JsonFile`, `GitUrl`); moved solver invocation and argument parsing out of `Application` (`ComposerSolver`, `CommandLine`). No behavior change.
