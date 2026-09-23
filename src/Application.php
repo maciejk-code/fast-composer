@@ -31,6 +31,8 @@ final class Application
         }
 
         $snapshot = new Snapshot($root);
+        // The in-process Composer solver may exit() directly; never leave work files behind.
+        register_shutdown_function([$snapshot, 'cleanupWorkFiles']);
         $operationLock = null;
 
         try {
@@ -134,15 +136,16 @@ final class Application
             } else {
                 $targets = $this->packageArguments(array_slice($args, 1));
                 if ($targets === []) {
-                    // Explicit mutable refs are always revalidated, regardless of the broad TTL.
-                    $devCount = $this->refreshExplicitDevRequirements($snapshot, $state, $rootCfg);
-                    if ($devCount > 0) {
-                        printf("[fast-composer] revalidated %d explicit dev branch refs\n", $devCount);
-                    }
-
                     $count = $snapshot->refreshAllIfStale($state, $rootCfg, $ttl);
                     if ($count > 0) {
                         printf("[fast-composer] refreshed %d VCS repositories (TTL %ds)\n", $count, $ttl);
+                    } else {
+                        // Explicit mutable refs are always revalidated, regardless of the broad TTL.
+                        // A full refresh above has already re-read every branch tip.
+                        $devCount = $this->refreshExplicitDevRequirements($snapshot, $state, $rootCfg);
+                        if ($devCount > 0) {
+                            printf("[fast-composer] revalidated %d explicit dev branch refs\n", $devCount);
+                        }
                     }
                 } else {
                     $count = $this->refreshTargetedUpdates($snapshot, $state, $rootCfg, $targets);
@@ -180,12 +183,21 @@ final class Application
         }
 
         fwrite(STDOUT, "[fast-composer] solving dependency graph from cached snapshot (lock only)\n");
-        $oldComposerEnv = getenv('COMPOSER');
-        try {
-            putenv('COMPOSER='.$fastComposer);
-            [$code] = Process::run(array_merge(['composer'], $args), $root, true);
-        } finally {
-            $oldComposerEnv === false ? putenv('COMPOSER') : putenv('COMPOSER='.$oldComposerEnv);
+        $env = ['COMPOSER' => $fastComposer] + $this->solverEnvironment($rootCfg, $root, $snapshot);
+        $code = InProcessComposer::run($args, $root, $env);
+        if ($code === null) {
+            $previous = [];
+            try {
+                foreach ($env as $name => $value) {
+                    $previous[$name] = getenv($name);
+                    putenv($name.'='.$value);
+                }
+                [$code] = Process::run(array_merge(['composer'], $args), $root, true);
+            } finally {
+                foreach ($previous as $name => $value) {
+                    $value === false ? putenv($name) : putenv($name.'='.$value);
+                }
+            }
         }
 
         if ($code !== 0) {
@@ -232,6 +244,47 @@ final class Application
 
         fwrite(STDOUT, "[fast-composer] lock verified and published\n");
         return 0;
+    }
+
+    /**
+     * Environment that removes work from the inner Composer run without changing its result.
+     *
+     * @return array<string,string>
+     */
+    private function solverEnvironment(array $rootCfg, string $root, Snapshot $snapshot): array
+    {
+        $env = [];
+
+        // Composer guesses the root package version by probing git/hg/fossil/svn in the project,
+        // which costs several subprocesses. The lock file never records the root version, so it
+        // only affects the solve when something references the root package itself. Pin it
+        // only when nothing can: no "self.version" constraints and no package mentioning the
+        // root package name.
+        if (getenv('COMPOSER_ROOT_VERSION') === false && !isset($rootCfg['version'])) {
+            $rootName = is_string($rootCfg['name'] ?? null) ? strtolower($rootCfg['name']) : null;
+            $composerJson = (string) @file_get_contents($root.'/composer.json');
+            $safe = !str_contains($composerJson, 'self.version');
+            if ($safe && $rootName !== null) {
+                foreach ([$snapshot->dir().'/packages.json', $root.'/composer.lock'] as $path) {
+                    $contents = is_file($path) ? @file_get_contents($path) : '';
+                    if ($contents === false || str_contains(strtolower($contents), '"'.$rootName.'"')) {
+                        $safe = false;
+                        break;
+                    }
+                }
+            }
+            if ($safe) {
+                $env['COMPOSER_ROOT_VERSION'] = 'dev-main';
+            }
+        }
+
+        // Without a terminal, Symfony Console shells out to `stty` twice to size output.
+        if (getenv('COLUMNS') === false && !(function_exists('stream_isatty') && @stream_isatty(STDOUT))) {
+            $env['COLUMNS'] = '120';
+            $env['LINES'] = '50';
+        }
+
+        return $env;
     }
 
     private function refreshForRequire(Snapshot $snapshot, array &$state, array $args): void
@@ -289,7 +342,7 @@ final class Application
 
     private function refreshExplicitDevRequirements(Snapshot $snapshot, array &$state, array $rootCfg): int
     {
-        $count = 0;
+        $requests = [];
         foreach (['require', 'require-dev'] as $section) {
             foreach (($rootCfg[$section] ?? []) as $name => $constraint) {
                 if (!is_string($name) || !is_string($constraint) || !$this->isManagedPackage($state, $name)) {
@@ -299,11 +352,11 @@ final class Application
                 if ($branch === null) {
                     continue;
                 }
-                $snapshot->ensureBranch($state, $name, $branch);
-                $count++;
+                $requests[] = [$name, $branch];
             }
         }
-        return $count;
+        $snapshot->ensureBranches($state, $requests);
+        return count($requests);
     }
 
     private function explicitDevBranch(string $constraint): ?string
@@ -509,6 +562,8 @@ final class Application
         echo "Initial priming reuses lock metadata and indexes VCS refs without hydrating every branch/tag.\n";
         echo "FAST_COMPOSER_TTL controls broad full-update ref validation (default: 300 seconds).\n";
         echo "FAST_COMPOSER_CACHE_DIR overrides the Fast Composer cache base directory.\n";
+        echo "FAST_COMPOSER_JOBS limits concurrent Git network operations (default: 8).\n";
+        echo "FAST_COMPOSER_IN_PROCESS=0 runs the Composer solver as a subprocess instead of in-process.\n";
         echo "Targeted update/require and explicit root dev-* constraints always bypass the TTL.\n";
     }
 }

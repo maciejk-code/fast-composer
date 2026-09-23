@@ -6,7 +6,7 @@ final class Primer
     private const KEEP = [
         'name','description','type','keywords','homepage','license','authors','support','funding',
         'require','require-dev','conflict','replace','provide','suggest','autoload','include-path',
-        'target-dir','bin','extra',
+        'target-dir','bin','extra','time',
     ];
 
     private string $root;
@@ -46,8 +46,16 @@ final class Primer
 
         $this->mergeLock($state, $rootConfig, $this->snapshot->readLock());
 
-        $urls = array_keys($state['repos']);
+        $urls = array_map('strval', array_keys($state['repos']));
         $total = count($urls);
+
+        // Ref indexing is one network round-trip per repository; overlap them.
+        $commands = [];
+        foreach ($urls as $url) {
+            $commands[$url] = [['git', 'ls-remote', '--heads', '--tags', $url], $this->root];
+        }
+        $listings = Process::runMany($commands);
+
         foreach ($urls as $index => $url) {
             $needsName = empty($state['repos'][$url]['name']);
             if ($progress !== null) {
@@ -59,8 +67,11 @@ final class Primer
                     $this->discoverRepositoryName($state, $url);
                 }
 
-                $refs = $this->remoteRefs($url);
-                $state['repos'][$url]['refs'] = $refs;
+                [$code, $out, $err] = $listings[$url];
+                if ($code !== 0) {
+                    throw new \RuntimeException(trim($err !== '' ? $err : $out) ?: "Cannot read refs from $url");
+                }
+                $state['repos'][$url]['refs'] = $this->parseRefs($out);
                 $state['repos'][$url]['checked_at'] = time();
                 unset($state['repos'][$url]['last_error']);
             } catch (\Throwable $e) {
@@ -92,13 +103,8 @@ final class Primer
     }
 
     /** @return array{heads:array<string,string>,tags:array<string,string>} */
-    private function remoteRefs(string $url): array
+    private function parseRefs(string $out): array
     {
-        [$code, $out, $err] = Process::run(['git', 'ls-remote', '--heads', '--tags', $url], $this->root);
-        if ($code !== 0) {
-            throw new \RuntimeException(trim($err !== '' ? $err : $out) ?: "Cannot read refs from $url");
-        }
-
         $heads = [];
         $tags = [];
         $peeled = [];

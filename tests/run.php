@@ -98,6 +98,51 @@ try {
     }
 
     echo "lazy-primer: OK\n";
+
+    // Parallel runner keeps results keyed and complete.
+    $parallel = Process::runMany([
+        'b' => [['php', '-r', 'usleep(100000); echo "slow";'], null],
+        'a' => [['php', '-r', 'fwrite(STDERR, "err"); exit(3);'], null],
+    ], 2);
+    if (array_keys($parallel) !== ['b', 'a'] || $parallel['b'] !== [0, 'slow', ''] || $parallel['a'] !== [3, '', 'err']) {
+        throw new RuntimeException('Process::runMany returned unexpected results: '.json_encode($parallel));
+    }
+    echo "parallel-runner: OK\n";
+
+    // A branch without composer.json (e.g. docs/gh-pages) must not break hydration, like Composer.
+    Process::must(['git', 'checkout', '-q', '--orphan', 'docs'], $repo);
+    Process::must(['git', 'rm', '-q', '-rf', '.'], $repo);
+    file_put_contents($repo.'/README.md', "docs\n");
+    Process::must(['git', 'add', 'README.md'], $repo);
+    Process::must(['git', 'commit', '-q', '-m', 'docs'], $repo);
+    Process::must(['git', 'checkout', '-q', '-f', 'main'], $repo);
+
+    $refreshed = $snapshot->refreshPackages($state, ['acme/a']);
+    $versions = $state['packages']['acme/a'] ?? [];
+    if ($refreshed !== 1 || !isset($versions['1.0.0'], $versions['dev-main'], $versions['dev-unused-a'], $versions['dev-unused-b'])) {
+        throw new RuntimeException('mirror hydration missed versions: '.implode(', ', array_keys($versions)));
+    }
+    if (isset($versions['dev-docs'])) {
+        throw new RuntimeException('ref without composer.json produced a version');
+    }
+    if (($versions['dev-unused-a']['extra']['unused'] ?? null) !== 'a' || ($versions['dev-unused-b']['extra']['unused'] ?? null) !== 'b') {
+        throw new RuntimeException('mirror hydration read metadata from the wrong ref');
+    }
+    $expectedTime = (new DateTimeImmutable('@'.trim(Process::must(['git', 'log', '-1', '--format=%at', 'unused-a'], $repo))))->format(DATE_RFC3339);
+    if (($versions['dev-unused-a']['time'] ?? null) !== $expectedTime) {
+        throw new RuntimeException('release time differs from Composer (author date): '.json_encode($versions['dev-unused-a']['time'] ?? null));
+    }
+    echo "mirror-hydration: OK\n";
+
+    // content-hash is patched in place, keeping Composer's empty JSON objects intact.
+    $lockPath = $root.'/content-hash.lock';
+    file_put_contents($lockPath, "{\n    \"content-hash\": \"old\",\n    \"packages\": [],\n    \"stability-flags\": {},\n    \"platform-dev\": {}\n}\n");
+    $snapshot->fixContentHash($lockPath, $config);
+    $patched = file_get_contents($lockPath);
+    if (str_contains($patched, '"old"') || !str_contains($patched, '"stability-flags": {}') || !str_contains($patched, '"platform-dev": {}')) {
+        throw new RuntimeException('content-hash rewrite altered the lock file layout: '.$patched);
+    }
+    echo "content-hash-in-place: OK\n";
 } finally {
     $rrmdir($base);
 }

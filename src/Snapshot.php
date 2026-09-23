@@ -3,13 +3,14 @@ namespace FastComposer;
 
 final class Snapshot
 {
-    public const FORMAT = 3;
+    public const FORMAT = 4;
     public const DEFAULT_TTL = 300;
+    private const MIRROR_MARKER = 'fast-composer-synced';
 
     private const KEEP = [
         'name','description','type','keywords','homepage','license','authors','support','funding',
         'require','require-dev','conflict','replace','provide','suggest','autoload','include-path',
-        'target-dir','bin','extra',
+        'target-dir','bin','extra','time',
     ];
 
     private const VERIFY = [
@@ -20,8 +21,12 @@ final class Snapshot
     private string $root;
     private string $cacheDir;
     private string $workStem;
-    /** @var array<string,array> Exact-SHA source metadata fetched during this process only. */
+    /** @var array<string,?array> Exact-SHA source metadata read during this process only (null: no composer.json). */
     private array $operationMetadata = [];
+    /** @var array<string,true> URL+SHA pairs obtained from the remote during this process. */
+    private array $reachable = [];
+    /** @var array<string,true> Repositories whose tips were fetched during this process. */
+    private array $fetchedTips = [];
 
     public function __construct(string $root)
     {
@@ -69,7 +74,7 @@ final class Snapshot
         $snapshot['format'] = self::FORMAT;
         $this->atomicWrite(
             $this->dir().'/snapshot.json',
-            json_encode($snapshot, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)."\n"
+            json_encode($snapshot, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)."\n"
         );
     }
 
@@ -120,13 +125,18 @@ final class Snapshot
 
         $this->mergeLockIntoSnapshot($snapshot, $rootConfig, $lock, false);
 
-        foreach (array_keys($snapshot['repos']) as $url) {
+        $urls = array_map('strval', array_keys($snapshot['repos']));
+        $errors = $this->fetchMirrors($urls);
+        foreach ($urls as $url) {
             try {
+                if (isset($errors[$url])) {
+                    throw new \RuntimeException($errors[$url]);
+                }
                 if (empty($snapshot['repos'][$url]['name'])) {
                     $this->discoverRepositoryName($snapshot, $url);
                 }
                 if (!empty($snapshot['repos'][$url]['name'])) {
-                    $this->hydrateRepository($snapshot, $url, $snapshot['repos'][$url]['name']);
+                    $this->hydrateFromMirror($snapshot, $url, $snapshot['repos'][$url]['name']);
                 }
             } catch (\Throwable $e) {
                 $snapshot['repos'][$url]['last_error'] = $e->getMessage();
@@ -177,12 +187,22 @@ final class Snapshot
             return 0;
         }
 
-        $count = 0;
+        $urls = [];
         foreach ($snapshot['repos'] ?? [] as $url => $repo) {
-            if (($repo['managed'] ?? false) !== true) {
-                continue;
+            if (($repo['managed'] ?? false) === true) {
+                $urls[] = (string) $url;
             }
-            $name = $repo['name'] ?? null;
+        }
+
+        // One network round-trip per repository, overlapped across repositories.
+        $errors = $this->fetchMirrors($urls);
+
+        $count = 0;
+        foreach ($urls as $url) {
+            if (isset($errors[$url])) {
+                throw new \RuntimeException($errors[$url]);
+            }
+            $name = $snapshot['repos'][$url]['name'] ?? null;
             if (!is_string($name) || $name === '') {
                 $this->discoverRepositoryName($snapshot, $url);
                 $name = $snapshot['repos'][$url]['name'] ?? null;
@@ -190,7 +210,7 @@ final class Snapshot
             if (!is_string($name) || $name === '') {
                 throw new \RuntimeException("Cannot determine package name for VCS repository $url");
             }
-            $this->hydrateRepository($snapshot, $url, $name);
+            $this->hydrateFromMirror($snapshot, $url, $name);
             $count++;
         }
 
@@ -202,8 +222,7 @@ final class Snapshot
     /** @param list<string> $patterns */
     public function refreshPackages(array &$snapshot, array $patterns): int
     {
-        $count = 0;
-
+        $matches = [];
         foreach ($snapshot['repos'] ?? [] as $url => $repo) {
             $name = $repo['name'] ?? null;
             if (!is_string($name) || $name === '') {
@@ -212,45 +231,86 @@ final class Snapshot
 
             foreach ($patterns as $pattern) {
                 if ($this->packagePatternMatches($pattern, $name)) {
-                    $this->hydrateRepository($snapshot, $url, $name);
-                    $count++;
+                    $matches[(string) $url] = $name;
                     break;
                 }
             }
         }
 
+        $errors = $this->fetchMirrors(array_keys($matches));
+        foreach ($matches as $url => $name) {
+            if (isset($errors[$url])) {
+                throw new \RuntimeException($errors[$url]);
+            }
+            $this->hydrateFromMirror($snapshot, $url, $name);
+        }
+
         $this->save($snapshot);
-        return $count;
+        return count($matches);
     }
 
     public function ensureBranch(array &$snapshot, string $package, string $branch): array
     {
-        $url = $this->urlForPackage($snapshot, $package);
-        if (!$url) {
-            throw new \RuntimeException("No VCS repository mapping for $package. Run a normal Composer update once, then fast-composer refresh.");
-        }
+        return $this->ensureBranches($snapshot, [[$package, $branch]])[0];
+    }
 
-        $ref = 'refs/heads/'.$branch;
-        [$sha, $meta] = $this->composerAtRef($url, $ref, "Branch $branch not found for $package");
-        $version = $this->branchVersion($branch);
-        $existing = $snapshot['packages'][$package][$version] ?? null;
-        if (is_array($existing) && ($existing['source']['reference'] ?? null) === $sha) {
-            $pkg = $existing;
-        } else {
-            if (($meta['name'] ?? null) !== $package) {
-                throw new \RuntimeException("Repository package name mismatch: expected $package");
+    /**
+     * Revalidate explicit development branches, fetching all of them concurrently.
+     *
+     * @param list<array{0:string,1:string}> $requests [package, branch] pairs
+     * @return list<array> the resulting snapshot package per request
+     */
+    public function ensureBranches(array &$snapshot, array $requests): array
+    {
+        $commands = [];
+        $urls = [];
+        foreach ($requests as $i => [$package, $branch]) {
+            $url = $this->urlForPackage($snapshot, $package);
+            if (!$url) {
+                throw new \RuntimeException("No VCS repository mapping for $package. Run a normal Composer update once, then fast-composer refresh.");
             }
-            $pkg = $this->packageFromMetadata($meta, $package, $version, $url, $sha);
-            $snapshot['packages'][$package][$version] = $pkg;
+            $urls[$i] = $url;
+            $ref = 'refs/heads/'.$branch;
+            $commands[$i] = [array_merge(
+                $this->gitMirrorPrefix($this->ensureMirror($url)),
+                ['fetch', '-q', '--depth=1', '--no-tags', '--no-write-fetch-head', '--', $url, '+'.$ref.':'.$ref]
+            ), $this->root];
         }
 
-        $snapshot['repos'][$url]['name'] = $package;
-        $snapshot['repos'][$url]['refs']['heads'][$branch] = $sha;
-        $snapshot['repos'][$url]['checked_at'] = time();
-        unset($snapshot['repos'][$url]['last_error']);
-        $this->save($snapshot);
+        $results = Process::runMany($commands);
+        $packages = [];
+        foreach ($requests as $i => [$package, $branch]) {
+            [$code, , $err] = $results[$i];
+            $notFound = "Branch $branch not found for $package";
+            if ($code !== 0) {
+                throw new \RuntimeException($notFound.($err !== '' ? ': '.trim($err) : ''));
+            }
+            $url = $urls[$i];
+            [$sha, $meta] = $this->readBranch($url, $branch, $notFound);
 
-        return $pkg;
+            $version = $this->branchVersion($branch);
+            $existing = $snapshot['packages'][$package][$version] ?? null;
+            if (is_array($existing) && ($existing['source']['reference'] ?? null) === $sha) {
+                $pkg = $existing;
+            } else {
+                if (($meta['name'] ?? null) !== $package) {
+                    throw new \RuntimeException("Repository package name mismatch: expected $package");
+                }
+                $pkg = $this->packageFromMetadata($meta, $package, $version, $url, $sha);
+                $snapshot['packages'][$package][$version] = $pkg;
+            }
+
+            $snapshot['repos'][$url]['name'] = $package;
+            $snapshot['repos'][$url]['refs']['heads'][$branch] = $sha;
+            $snapshot['repos'][$url]['checked_at'] = time();
+            unset($snapshot['repos'][$url]['last_error']);
+            $packages[$i] = $pkg;
+        }
+
+        if ($requests !== []) {
+            $this->save($snapshot);
+        }
+        return $packages;
     }
 
     public function writeFastComposer(array $rootConfig, array $snapshot): string
@@ -266,7 +326,7 @@ final class Snapshot
 
         $this->atomicWrite(
             $this->dir().'/packages.json',
-            json_encode(['packages' => $this->groupPackages($packages)], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)."\n"
+            json_encode(['packages' => $this->groupPackages($packages)], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)."\n"
         );
 
         $config = $rootConfig;
@@ -291,6 +351,7 @@ final class Snapshot
         $before = $this->packagesByName($beforeLock);
         $after = $this->packagesByName($afterLock);
 
+        $changed = [];
         foreach ($after as $name => $package) {
             $previous = $before[$name] ?? null;
             if ($previous !== null && $this->normalize($previous) === $this->normalize($package)) {
@@ -304,7 +365,12 @@ final class Snapshot
             if ($this->managedRepoUrl($source['url'], $rootConfig) === null) {
                 continue;
             }
+            $changed[$name] = $package;
+        }
 
+        $this->prefetchExact($changed);
+        foreach ($changed as $name => $package) {
+            $source = $package['source'];
             $meta = $this->composerAt($source['url'], $source['reference']);
             if (!$this->metadataMatches($package, $meta)) {
                 throw new \RuntimeException(
@@ -316,21 +382,30 @@ final class Snapshot
 
     public function fixContentHash(string $lockPath, array $rootConfig): void
     {
-        $lock = $this->readJson($lockPath, []);
-        if (!isset($lock['packages'])) {
+        $raw = is_file($lockPath) ? file_get_contents($lockPath) : false;
+        if ($raw === false) {
             throw new \RuntimeException("Invalid lock file: $lockPath");
         }
-        $lock['content-hash'] = $this->contentHash($rootConfig);
-        $this->atomicWrite(
-            $lockPath,
-            json_encode($lock, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)."\n"
-        );
+        $lock = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+        if (!is_array($lock) || !isset($lock['packages'])) {
+            throw new \RuntimeException("Invalid lock file: $lockPath");
+        }
+
+        // Patch the hash in place: re-encoding would turn Composer's empty objects ({}) into
+        // arrays ([]) and create lock-file noise.
+        $hash = $this->contentHash($rootConfig);
+        $patched = preg_replace('/("content-hash"\s*:\s*)"[^"]*"/', '${1}"'.$hash.'"', $raw, 1, $count);
+        if (!is_string($patched) || $count !== 1) {
+            $lock['content-hash'] = $hash;
+            $patched = json_encode($lock, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)."\n";
+        }
+        $this->atomicWrite($lockPath, $patched);
     }
 
     public function verifyLock(array $rootConfig): array
     {
         $lock = $this->readLock();
-        $results = [];
+        $managed = [];
 
         foreach (array_merge($lock['packages'] ?? [], $lock['packages-dev'] ?? []) as $package) {
             $source = $package['source'] ?? [];
@@ -340,16 +415,23 @@ final class Snapshot
             if ($this->managedRepoUrl($source['url'], $rootConfig) === null) {
                 continue;
             }
+            $managed[$package['name']] = $package;
+        }
 
+        $this->prefetchExact($managed, false);
+
+        $results = [];
+        foreach ($managed as $name => $package) {
+            $source = $package['source'];
             try {
                 $meta = $this->composerAt($source['url'], $source['reference']);
-                $results[$package['name']] = [
+                $results[$name] = [
                     'sha' => $source['reference'],
                     'reachable' => true,
                     'metadata_match' => $this->metadataMatches($package, $meta),
                 ];
             } catch (\Throwable) {
-                $results[$package['name']] = [
+                $results[$name] = [
                     'sha' => $source['reference'],
                     'reachable' => false,
                     'metadata_match' => false,
@@ -360,13 +442,15 @@ final class Snapshot
         return $results;
     }
 
-    private function hydrateRepository(array &$snapshot, string $url, string $package): void
+    /**
+     * Rebuild a repository's versions from its local mirror after fetchMirrors() refreshed it.
+     */
+    private function hydrateFromMirror(array &$snapshot, string $url, string $package): void
     {
-        $remote = $this->remoteVersions($url);
+        $remote = $this->mirrorVersions($url);
         $existing = $snapshot['packages'][$package] ?? [];
         $next = [];
         $pending = [];
-        $missingShas = [];
 
         foreach ($remote['versions'] as $version => $ref) {
             $current = $existing[$version] ?? null;
@@ -374,35 +458,20 @@ final class Snapshot
                 $next[$version] = $current;
                 continue;
             }
-
-            $cached = $this->composerCacheMetadata($url, $ref['sha']);
-            if (is_array($cached)) {
-                if (($cached['name'] ?? null) !== $package) {
-                    throw new \RuntimeException("Repository package name mismatch for $url: expected $package");
-                }
-                $next[$version] = $this->packageFromMetadata($cached, $package, $version, $url, $ref['sha']);
-                continue;
-            }
-
-            $key = $this->metadataKey($url, $ref['sha']);
-            if (isset($this->operationMetadata[$key])) {
-                $meta = $this->operationMetadata[$key];
-                if (($meta['name'] ?? null) !== $package) {
-                    throw new \RuntimeException("Repository package name mismatch for $url: expected $package");
-                }
-                $next[$version] = $this->packageFromMetadata($meta, $package, $version, $url, $ref['sha']);
-                continue;
-            }
-
             $pending[$version] = $ref;
-            $missingShas[$ref['sha']] = true;
         }
 
-        if ($missingShas !== []) {
-            $this->composerManyAt($url, array_keys($missingShas));
+        if ($pending !== []) {
+            // Every advertised tip is already in the mirror: read all composer.json files at once.
+            $this->readMirrorMetadata($url, array_column($pending, 'sha'));
             foreach ($pending as $version => $ref) {
-                $meta = $this->operationMetadata[$this->metadataKey($url, $ref['sha'])] ?? null;
-                if (!is_array($meta) || ($meta['name'] ?? null) !== $package) {
+                $key = $this->metadataKey($url, $ref['sha']);
+                if (!array_key_exists($key, $this->operationMetadata) || $this->operationMetadata[$key] === null) {
+                    // Like Composer, refs without a readable composer.json simply provide no version.
+                    continue;
+                }
+                $meta = $this->operationMetadata[$key];
+                if (($meta['name'] ?? null) !== $package) {
                     throw new \RuntimeException("Repository package name mismatch for $url: expected $package");
                 }
                 $next[$version] = $this->packageFromMetadata($meta, $package, $version, $url, $ref['sha']);
@@ -420,55 +489,85 @@ final class Snapshot
         unset($snapshot['repos'][$url]['last_error']);
     }
 
-    /** @return array{versions:array<string,array{sha:string,kind:string,ref:string}>,refs:array{heads:array<string,string>,tags:array<string,string>}} */
-    private function remoteVersions(string $url): array
+    /**
+     * Synchronize branch/tag tips of each repository into a persistent shallow mirror.
+     *
+     * This is a single network operation per repository that both lists refs and downloads
+     * any new tips, replacing the previous ls-remote + throwaway-clone fetch pair. Fetches for
+     * different repositories run concurrently.
+     *
+     * @param list<string> $urls
+     * @return array<string,string> error message per failed URL
+     */
+    private function fetchMirrors(array $urls): array
     {
-        [$code, $out, $err] = Process::run(['git', 'ls-remote', '--heads', '--tags', $url], $this->root);
-        if ($code !== 0) {
-            throw new \RuntimeException(trim($err !== '' ? $err : $out) ?: "Cannot read refs from $url");
+        $commands = [];
+        foreach (array_values(array_unique($urls)) as $url) {
+            $dir = $this->ensureMirror($url);
+            // The first fetch only takes the tips (--depth=1). Later fetches are incremental
+            // against those tips; a repeated --depth would force an extra pack round even when
+            // nothing changed.
+            $depth = is_file($dir.'/'.self::MIRROR_MARKER) ? [] : ['--depth=1'];
+            $commands[$url] = [array_merge(
+                $this->gitMirrorPrefix($dir),
+                ['fetch', '-q', '--prune', '--no-tags'],
+                $depth,
+                ['--', $url, '+refs/heads/*:refs/heads/*', '+refs/tags/*:refs/tags/*']
+            ), $this->root];
         }
+
+        $errors = [];
+        foreach (Process::runMany($commands) as $url => [$code, $out, $err]) {
+            if ($code !== 0) {
+                $errors[$url] = trim($err !== '' ? $err : $out) ?: "Cannot read refs from $url";
+                continue;
+            }
+            @touch($this->mirrorDir($url).'/'.self::MIRROR_MARKER);
+            // Tips fetched just now are proven reachable on the remote during this invocation.
+            $this->fetchedTips[$this->normalizeGitUrl($url)] = true;
+        }
+        return $errors;
+    }
+
+    /** @return array{versions:array<string,array{sha:string,kind:string,ref:string}>,refs:array{heads:array<string,string>,tags:array<string,string>}} */
+    private function mirrorVersions(string $url): array
+    {
+        $out = Process::must(array_merge(
+            $this->gitMirrorPrefix($this->mirrorDir($url)),
+            ['for-each-ref', '--format=%(objectname) %(*objectname) %(refname)', 'refs/heads', 'refs/tags']
+        ), $this->root);
 
         $heads = [];
         $tags = [];
-        $peeled = [];
-
         foreach (preg_split('/\R/', trim($out)) ?: [] as $line) {
-            if ($line === '') {
+            $parts = explode(' ', $line, 3);
+            if (count($parts) !== 3) {
                 continue;
             }
-            $parts = preg_split('/\s+/', $line, 2);
-            if (count($parts) !== 2) {
-                continue;
-            }
-            [$sha, $ref] = $parts;
-
+            [$sha, $peeled, $ref] = $parts;
             if (str_starts_with($ref, 'refs/heads/')) {
                 $heads[substr($ref, strlen('refs/heads/'))] = $sha;
-                continue;
-            }
-            if (!str_starts_with($ref, 'refs/tags/')) {
-                continue;
-            }
-
-            $tag = substr($ref, strlen('refs/tags/'));
-            if (str_ends_with($tag, '^{}')) {
-                $peeled[substr($tag, 0, -3)] = $sha;
-            } else {
-                $tags[$tag] = $sha;
+            } elseif (str_starts_with($ref, 'refs/tags/')) {
+                $tags[substr($ref, strlen('refs/tags/'))] = $peeled !== '' ? $peeled : $sha;
             }
         }
-        $tags = array_replace($tags, $peeled);
 
         $versions = [];
         foreach ($heads as $branch => $sha) {
-            $versions[$this->branchVersion($branch)] = ['sha' => $sha, 'kind' => 'branch', 'ref' => $branch];
+            $versions[$this->branchVersion((string) $branch)] = ['sha' => $sha, 'kind' => 'branch', 'ref' => (string) $branch];
         }
         foreach ($tags as $tag => $sha) {
-            $version = $this->tagVersion($tag);
+            $version = $this->tagVersion((string) $tag);
             if ($version === null) {
                 continue;
             }
-            $versions[$version] = ['sha' => $sha, 'kind' => 'tag', 'ref' => $tag];
+            $versions[$version] = ['sha' => $sha, 'kind' => 'tag', 'ref' => (string) $tag];
+        }
+
+        if (isset($this->fetchedTips[$this->normalizeGitUrl($url)])) {
+            foreach ($versions as $ref) {
+                $this->reachable[$this->metadataKey($url, $ref['sha'])] = true;
+            }
         }
 
         return ['versions' => $versions, 'refs' => ['heads' => $heads, 'tags' => $tags]];
@@ -481,7 +580,7 @@ final class Snapshot
             throw new \RuntimeException(trim($err !== '' ? $err : $out) ?: "Cannot resolve HEAD for $url");
         }
         $sha = preg_split('/\s+/', trim($out))[0];
-        $meta = $this->metadataAt($url, $sha);
+        $meta = $this->composerAt($url, $sha);
         $name = $meta['name'] ?? null;
         if (!is_string($name) || $name === '') {
             throw new \RuntimeException("composer.json at $url HEAD has no package name");
@@ -489,63 +588,24 @@ final class Snapshot
         $snapshot['repos'][$url]['name'] = $name;
     }
 
-    private function metadataAt(string $url, string $sha): array
-    {
-        $key = $this->metadataKey($url, $sha);
-        return $this->operationMetadata[$key]
-            ?? $this->composerCacheMetadata($url, $sha)
-            ?? $this->composerAt($url, $sha);
-    }
-
     private function metadataKey(string $url, string $sha): string
     {
         return hash('sha256', $this->normalizeGitUrl($url)).':'.$sha;
     }
 
-    private function composerCacheMetadata(string $url, string $sha): ?array
-    {
-        if (!preg_match('~(?:https?://|ssh://git@|git@)?github\.com[/:]([^/]+)/([^/]+?)(?:\.git)?/?$~i', $url, $m)) {
-            return null;
-        }
-
-        $owner = $m[1];
-        $repo = preg_replace('/\.git$/i', '', $m[2]);
-        $cache = $this->composerCacheRepoDir();
-        $paths = [
-            "$cache/github.com/".strtolower($owner)."/$repo/$sha",
-            "$cache/github.com/$owner/$repo/$sha",
-        ];
-
-        foreach ($paths as $path) {
-            if (!is_file($path)) {
-                continue;
-            }
-            $meta = json_decode(file_get_contents($path), true);
-            if (is_array($meta)) {
-                return $meta;
-            }
-        }
-
-        return null;
-    }
-
-    private function composerCacheRepoDir(): string
-    {
-        [$code, $out] = Process::run(['composer', 'config', 'cache-repo-dir', '--absolute'], $this->root);
-        if ($code === 0 && trim($out) !== '') {
-            return trim($out);
-        }
-        return $this->composerCacheBaseDir().'/repo';
-    }
-
+    /**
+     * composer.json at an exact SHA that was obtained from the remote during this invocation.
+     */
     private function composerAt(string $url, string $sha): array
     {
         $key = $this->metadataKey($url, $sha);
-        if (isset($this->operationMetadata[$key])) {
-            return $this->operationMetadata[$key];
+        if (!isset($this->reachable[$key])) {
+            $this->fetchExact([$url => [$sha]]);
+        }
+        if (!array_key_exists($key, $this->operationMetadata)) {
+            $this->readMirrorMetadata($url, [$sha]);
         }
 
-        $this->composerManyAt($url, [$sha]);
         $data = $this->operationMetadata[$key] ?? null;
         if (!is_array($data)) {
             throw new \RuntimeException('Invalid composer.json at '.$sha);
@@ -553,83 +613,207 @@ final class Snapshot
         return $data;
     }
 
-    /** @return array{0:string,1:array} */
-    private function composerAtRef(string $url, string $ref, string $notFoundMessage): array
+    /**
+     * Fetch the exact source SHAs of the given lock packages in parallel (one fetch per repo).
+     *
+     * @param array<string,array> $packages
+     */
+    private function prefetchExact(array $packages, bool $throw = true): void
     {
-        $this->ensureDir();
-        $tmp = $this->dir().'/fetch-ref-'.bin2hex(random_bytes(5));
-        if (!mkdir($tmp, 0700, true) && !is_dir($tmp)) {
-            throw new \RuntimeException("Cannot create temporary directory $tmp");
+        $wanted = [];
+        foreach ($packages as $package) {
+            $url = $package['source']['url'];
+            $sha = $package['source']['reference'];
+            if (!isset($this->reachable[$this->metadataKey($url, $sha)])) {
+                $wanted[$url][] = $sha;
+            }
         }
-
-        try {
-            Process::must(['git', 'init', '-q'], $tmp);
-            Process::must(['git', 'remote', 'add', 'origin', $url], $tmp);
-            [$code, $out, $err] = Process::run(['git', 'fetch', '-q', '--depth=1', '--no-tags', 'origin', $ref], $tmp);
-            if ($code !== 0) {
-                throw new \RuntimeException($notFoundMessage.($err !== '' ? ': '.trim($err) : ''));
-            }
-
-            $sha = trim(Process::must(['git', 'rev-parse', 'FETCH_HEAD'], $tmp));
-            if ($sha === '') {
-                throw new \RuntimeException($notFoundMessage);
-            }
-            $json = Process::must(['git', 'show', $sha.':composer.json'], $tmp);
-            $data = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
-            if (!is_array($data)) {
-                throw new \RuntimeException('Invalid composer.json at '.$sha);
-            }
-            $this->operationMetadata[$this->metadataKey($url, $sha)] = $data;
-            return [$sha, $data];
-        } finally {
-            $this->rrmdir($tmp);
+        $errors = $this->fetchExact($wanted, false);
+        if ($throw && $errors !== []) {
+            throw new \RuntimeException(reset($errors));
         }
     }
 
-    /** @param list<string> $shas */
-    private function composerManyAt(string $url, array $shas): void
+    /**
+     * @param array<string,list<string>> $shasByUrl
+     * @return array<string,string> error message per failed URL
+     */
+    private function fetchExact(array $shasByUrl, bool $throw = true): array
     {
-        $shas = array_values(array_unique(array_filter($shas, static fn ($sha): bool => is_string($sha) && $sha !== '')));
+        $commands = [];
+        $chunks = [];
+        foreach ($shasByUrl as $url => $shas) {
+            $shas = array_values(array_unique(array_filter($shas, static fn ($sha): bool => is_string($sha) && $sha !== '')));
+            if ($shas === []) {
+                continue;
+            }
+            $dir = $this->ensureMirror($url);
+            // Keep command lines bounded while amortizing SSH/TLS setup across many SHAs.
+            foreach (array_chunk($shas, 64) as $i => $chunk) {
+                $commands[$url.'#'.$i] = [array_merge(
+                    $this->gitMirrorPrefix($dir),
+                    ['fetch', '-q', '--depth=1', '--no-tags', '--no-write-fetch-head', '--', $url],
+                    $chunk
+                ), $this->root];
+                $chunks[$url.'#'.$i] = [$url, $chunk];
+            }
+        }
+
+        $errors = [];
+        foreach (Process::runMany($commands) as $id => [$code, $out, $err]) {
+            [$url, $chunk] = $chunks[$id];
+            if ($code !== 0) {
+                $errors[$url] = trim($err !== '' ? $err : $out) ?: 'Cannot fetch '.implode(', ', $chunk)." from $url";
+                continue;
+            }
+            foreach ($chunk as $sha) {
+                $this->reachable[$this->metadataKey($url, $sha)] = true;
+            }
+        }
+
+        if ($throw && $errors !== []) {
+            throw new \RuntimeException(reset($errors));
+        }
+        return $errors;
+    }
+
+    /**
+     * Branch tip and its composer.json, read from the mirror right after fetching the branch.
+     *
+     * @return array{0:string,1:array}
+     */
+    private function readBranch(string $url, string $branch, string $notFoundMessage): array
+    {
+        $ref = 'refs/heads/'.$branch;
+        $objects = $this->catFile($this->mirrorDir($url), [$ref.'^{commit}', $ref.':composer.json']);
+        $sha = $objects[0]['oid'] ?? null;
+        if (!is_string($sha) || ($objects[0]['type'] ?? null) !== 'commit') {
+            throw new \RuntimeException($notFoundMessage);
+        }
+
+        $key = $this->metadataKey($url, $sha);
+        $this->reachable[$key] = true;
+        $this->operationMetadata[$key] = $this->withReleaseDate($this->decodeComposerJson($objects[1] ?? null), $objects[0]);
+        if ($this->operationMetadata[$key] === null) {
+            throw new \RuntimeException('Invalid composer.json at '.$sha);
+        }
+        return [$sha, $this->operationMetadata[$key]];
+    }
+
+    /** @param list<string> $shas */
+    private function readMirrorMetadata(string $url, array $shas): void
+    {
+        $shas = array_values(array_unique(array_filter(
+            $shas,
+            fn ($sha): bool => is_string($sha) && $sha !== '' && !array_key_exists($this->metadataKey($url, $sha), $this->operationMetadata)
+        )));
         if ($shas === []) {
             return;
         }
 
-        $missing = [];
+        $specs = [];
         foreach ($shas as $sha) {
-            if (!isset($this->operationMetadata[$this->metadataKey($url, $sha)])) {
-                $missing[] = $sha;
+            $specs[] = $sha.':composer.json';
+            $specs[] = $sha.'^{commit}';
+        }
+        $objects = $this->catFile($this->mirrorDir($url), $specs);
+        foreach ($shas as $i => $sha) {
+            $this->operationMetadata[$this->metadataKey($url, $sha)] = $this->withReleaseDate(
+                $this->decodeComposerJson($objects[2 * $i] ?? null),
+                $objects[2 * $i + 1] ?? null
+            );
+        }
+    }
+
+    /**
+     * Same release date Composer's GitDriver records: the commit author date, unless
+     * composer.json declares its own "time".
+     */
+    private function withReleaseDate(?array $meta, ?array $commit): ?array
+    {
+        if ($meta === null || (isset($meta['time']) && is_string($meta['time']))) {
+            return $meta;
+        }
+        if ($commit !== null && $commit['type'] === 'commit'
+            && preg_match('/^author .* (\d+) [+-]\d{4}$/m', $commit['content'], $m)) {
+            $meta['time'] = (new \DateTimeImmutable('@'.$m[1]))->setTimezone(new \DateTimeZone('UTC'))->format(DATE_RFC3339);
+        }
+        return $meta;
+    }
+
+    /**
+     * Read many objects with one `git cat-file --batch` process.
+     *
+     * @param list<string> $specs
+     * @return list<?array{oid:string,type:string,content:string}>
+     */
+    private function catFile(string $dir, array $specs): array
+    {
+        [$code, $out, $err] = Process::runWithInput(
+            array_merge($this->gitMirrorPrefix($dir), ['cat-file', '--batch']),
+            implode("\n", $specs)."\n",
+            $this->root
+        );
+        if ($code !== 0) {
+            throw new \RuntimeException(trim($err) ?: 'git cat-file failed in '.$dir);
+        }
+
+        $result = [];
+        $offset = 0;
+        $length = strlen($out);
+        foreach ($specs as $i => $_) {
+            $eol = strpos($out, "\n", $offset);
+            if ($eol === false) {
+                $result[$i] = null;
+                continue;
             }
+            $header = substr($out, $offset, $eol - $offset);
+            $offset = $eol + 1;
+            if (!preg_match('/^([0-9a-f]{40,64}) (\S+) (\d+)$/', $header, $m)) {
+                // "<spec> missing" / "<spec> ambiguous": no object for this spec.
+                $result[$i] = null;
+                continue;
+            }
+            $size = (int) $m[3];
+            $result[$i] = ['oid' => $m[1], 'type' => $m[2], 'content' => (string) substr($out, $offset, $size)];
+            $offset = min($length, $offset + $size + 1);
         }
-        if ($missing === []) {
-            return;
-        }
+        return $result;
+    }
 
-        $this->ensureDir();
-        $tmp = $this->dir().'/fetch-'.bin2hex(random_bytes(5));
-        if (!mkdir($tmp, 0700, true) && !is_dir($tmp)) {
-            throw new \RuntimeException("Cannot create temporary directory $tmp");
+    private function decodeComposerJson(?array $object): ?array
+    {
+        if ($object === null || $object['type'] !== 'blob') {
+            return null;
         }
-
         try {
-            Process::must(['git', 'init', '-q'], $tmp);
-            Process::must(['git', 'remote', 'add', 'origin', $url], $tmp);
-
-            // Keep command lines bounded while amortizing SSH/TLS setup across many ref tips.
-            foreach (array_chunk($missing, 64) as $chunk) {
-                Process::must(array_merge(['git', 'fetch', '-q', '--depth=1', '--no-tags', 'origin'], $chunk), $tmp);
-            }
-
-            foreach ($missing as $sha) {
-                $json = Process::must(['git', 'show', $sha.':composer.json'], $tmp);
-                $data = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
-                if (!is_array($data)) {
-                    throw new \RuntimeException('Invalid composer.json at '.$sha);
-                }
-                $this->operationMetadata[$this->metadataKey($url, $sha)] = $data;
-            }
-        } finally {
-            $this->rrmdir($tmp);
+            $data = json_decode($object['content'], true, 512, JSON_THROW_ON_ERROR);
+        } catch (\JsonException) {
+            return null;
         }
+        return is_array($data) ? $data : null;
+    }
+
+    private function mirrorDir(string $url): string
+    {
+        return $this->dir().'/mirrors/'.substr(hash('sha256', $this->normalizeGitUrl($url)), 0, 24).'.git';
+    }
+
+    private function ensureMirror(string $url): string
+    {
+        $dir = $this->mirrorDir($url);
+        if (!is_file($dir.'/HEAD')) {
+            $this->ensureDir();
+            Process::must(['git', 'init', '-q', '--bare', $dir], $this->root);
+        }
+        return $dir;
+    }
+
+    /** @return list<string> */
+    private function gitMirrorPrefix(string $dir): array
+    {
+        // Mirrors are private metadata caches: never trigger background maintenance or gc.
+        return ['git', '-c', 'maintenance.auto=false', '-c', 'gc.auto=0', '-c', 'fetch.writeCommitGraph=false', '--git-dir='.$dir];
     }
 
     private function metadataMatches(array $lockedPackage, array $sourceComposer): bool
@@ -921,20 +1105,5 @@ final class Snapshot
     private function isAbsolutePath(string $path): bool
     {
         return str_starts_with($path, '/') || preg_match('~^[A-Za-z]:[\\\\/]~', $path) === 1;
-    }
-
-    private function rrmdir(string $dir): void
-    {
-        if (!is_dir($dir)) {
-            return;
-        }
-        foreach (scandir($dir) ?: [] as $file) {
-            if ($file === '.' || $file === '..') {
-                continue;
-            }
-            $path = "$dir/$file";
-            is_dir($path) ? $this->rrmdir($path) : @unlink($path);
-        }
-        @rmdir($dir);
     }
 }
