@@ -31,14 +31,17 @@ publish (`ComposerJson::applyRequireChanges` for require).
 
 ## Commands
 
-- `composer test` — unit tests (`tests/unit/*.php`, each isolated with a fresh cache; helpers in
-  `tests/support.php`). Fast.
-- `composer test:contracts` — end-to-end against real Composer (several minutes).
-- `composer analyse` — PHPStan level 5 (`phpstan.neon.dist`; needs the composer phar on PATH).
-- `composer check` — all of the above.
+- `bash tests/ci.sh` — **everything CI runs** (the workflow only calls this script, so add new
+  checks here, not in `.github/workflows`). Targets: `all` (default), `unit`, `analyse`,
+  `contracts`, or one contract by name (`parity`, `auth`, `safety`, `ci-verifier`, `runtime`,
+  `global-install`). New contract: add `tests/<name>-contract.sh` and its name to `CONTRACTS`.
+- `composer test` — unit tests only (`tests/unit/*.php`, each isolated with a fresh cache;
+  helpers in `tests/support.php`). Fast.
+- `composer check` = `bash tests/ci.sh all`; `composer analyse` = PHPStan level 5
+  (`phpstan.neon.dist`; needs the composer phar on PATH).
 - Benchmarks: `bash benchmarks/private-vcs-like.sh` (40 repos, 40 ms per Git op, ~5 min),
   `BENCH_RUNS=1 BENCH_REPOS=10 bash benchmarks/run.sh` for a quick sanity check. Every row must
-  say `5/5` (or `1/1`) in "Same lock as Composer".
+  say `5/5` (or `1/1`) in "Same lock as Composer". Do not run benchmarks in parallel with tests.
 
 ## Reading Composer's source
 

@@ -9,22 +9,14 @@
   "bin": ["bin/fast-composer"],
   "scripts": {
     "test": "php tests/run.php",
-    "test:contracts": [
-      "Composer\\Config::disableProcessTimeout",
-      "bash tests/safety-contract.sh",
-      "bash tests/ci-verifier-contract.sh",
-      "bash tests/runtime-contract.sh",
-      "bash tests/parity-contract.sh",
-      "bash tests/auth-contract.sh",
-      "bash tests/global-install-smoke.sh"
-    ],
+    "test:contracts": ["Composer\\Config::disableProcessTimeout", "bash tests/ci.sh contracts"],
     "analyse": "phpstan analyse --no-progress",
-    "check": ["@analyse", "@test", "@test:contracts"]
+    "check": ["Composer\\Config::disableProcessTimeout", "bash tests/ci.sh all"]
   },
   "scripts-descriptions": {
     "test": "Unit tests (tests/unit, each file isolated)",
-    "test:contracts": "End-to-end contracts against real Composer: safety, parity, auth, runtime, global install",
+    "test:contracts": "End-to-end contracts against real Composer (list in tests/ci.sh)",
     "analyse": "PHPStan (needs the composer phar on PATH to see Composer classes)",
-    "check": "Everything: static analysis, unit tests and all contracts"
+    "check": "Everything CI runs: tests/ci.sh all"
   }
 }
