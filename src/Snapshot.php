@@ -29,6 +29,8 @@ final class Snapshot
     private array $reachable = [];
     /** @var array<string,true> Repositories whose tips were fetched during this process. */
     private array $fetchedTips = [];
+    /** @var null|callable(string):void */
+    private $logger = null;
 
     public function __construct(string $root)
     {
@@ -37,6 +39,60 @@ final class Snapshot
         $this->baseDir = $this->cacheBaseDir();
         $this->cacheDir = $this->baseDir.'/projects/'.substr(hash('sha256', $this->root), 0, 24);
         $this->workStem = '.fast-composer-'.getmypid().'-'.bin2hex(random_bytes(4));
+    }
+
+    /** @param callable(string):void $logger receives human-readable progress lines */
+    public function setLogger(callable $logger): void
+    {
+        $this->logger = $logger;
+    }
+
+    private function log(string $message): void
+    {
+        if ($this->logger !== null) {
+            ($this->logger)($message);
+        }
+    }
+
+    /**
+     * Run Git commands concurrently and report per-repository progress plus a heartbeat naming
+     * what is still running, so a slow or stuck remote is visible instead of silent.
+     *
+     * @param array<array-key,array{0:list<string>,1:?string}> $commands
+     * @param callable(array-key):string $labelOf
+     */
+    private function runGit(array $commands, string $what, callable $labelOf): array
+    {
+        if ($commands === []) {
+            return [];
+        }
+        $total = count($commands);
+        $this->log(sprintf('%s: %d (up to %d in parallel)', $what, $total, min($total, Process::defaultJobs())));
+
+        return Process::runMany($commands, null, function (string $event, $subject, ?array $result, float $seconds, int $done, int $total) use ($labelOf): void {
+            if ($event === 'done') {
+                [$code, , $err] = $result;
+                $status = $code === 0 ? 'ok' : 'FAILED: '.strtok(trim($err) ?: 'exit '.$code, "\n");
+                $this->log(sprintf('  [%d/%d] %s %s (%.1fs)', $done, $total, $labelOf($subject), $status, $seconds));
+                return;
+            }
+            $labels = array_map($labelOf, $subject);
+            $shown = implode(', ', array_slice($labels, 0, 3)).(count($labels) > 3 ? sprintf(' (+%d more)', count($labels) - 3) : '');
+            $this->log(sprintf('  ... %d/%d done after %.0fs, still waiting on: %s', $done, $total, $seconds, $shown));
+            if ($seconds >= 15) {
+                $this->log('      no progress for a long time usually means Git/SSH is waiting for an unreachable host, a VPN, or an SSH passphrase/host-key confirmation (run `ssh -T <host>` once, or load the key into ssh-agent)');
+            }
+        });
+    }
+
+    /** Add a hint to Git errors caused by missing credentials. */
+    private function gitError(string $err, string $fallback): string
+    {
+        $message = trim($err) ?: $fallback;
+        if (preg_match('/terminal prompts disabled|could not read (Username|Password)|Permission denied \(publickey|Host key verification failed/i', $message)) {
+            $message .= "\nHint: Fast Composer runs Git non-interactively. Make sure `git ls-remote <url>` works without prompting (SSH key in ssh-agent, known host accepted, or an HTTPS credential helper).";
+        }
+        return $message;
     }
 
     public function dir(): string
@@ -316,7 +372,7 @@ final class Snapshot
 
         $locks = $this->lockMirrors(array_values(array_intersect_key($urls, $commands)));
         try {
-            $results = Process::runMany($commands);
+            $results = $this->runGit($commands, 'fetching explicit dev branches', static fn ($i): string => $requests[$i][0].':dev-'.$requests[$i][1]);
         } finally {
             $this->unlockMirrors($locks);
         }
@@ -325,7 +381,7 @@ final class Snapshot
             [$code, , $err] = $results[$i] ?? [0, '', ''];
             $notFound = "Branch $branch not found for $package";
             if ($code !== 0) {
-                throw new \RuntimeException($notFound.($err !== '' ? ': '.trim($err) : ''));
+                throw new \RuntimeException($notFound.($err !== '' ? ': '.$this->gitError($err, '') : ''));
             }
             $url = $urls[$i];
             [$sha, $meta] = $this->readBranch($url, $branch, $notFound);
@@ -383,7 +439,7 @@ final class Snapshot
         $path = $this->workComposerPath();
         $this->atomicWrite(
             $path,
-            json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)."\n"
+            ComposerJson::encode($config)
         );
         return $path;
     }
@@ -567,7 +623,7 @@ final class Snapshot
 
         $locks = $this->lockMirrors(array_keys($commands));
         try {
-            $results = Process::runMany($commands);
+            $results = $this->runGit($commands, 'fetching VCS repositories', static fn ($url): string => (string) $url);
         } finally {
             $this->unlockMirrors($locks);
         }
@@ -575,7 +631,7 @@ final class Snapshot
         $errors = [];
         foreach ($results as $url => [$code, $out, $err]) {
             if ($code !== 0) {
-                $errors[$url] = trim($err !== '' ? $err : $out) ?: "Cannot read refs from $url";
+                $errors[$url] = $this->gitError($err !== '' ? $err : $out, "Cannot read refs from $url");
                 continue;
             }
             @touch($this->mirrorDir($url).'/'.self::MIRROR_MARKER);
@@ -655,7 +711,7 @@ final class Snapshot
         }
         $locks = $this->lockMirrors($urls);
         try {
-            $results = Process::runMany($commands);
+            $results = $this->runGit($commands, 'reading package names from remote HEAD', static fn ($url): string => (string) $url);
         } finally {
             $this->unlockMirrors($locks);
         }
@@ -753,7 +809,7 @@ final class Snapshot
 
         $locks = $this->lockMirrors(array_values(array_unique(array_column($chunks, 0))));
         try {
-            $results = Process::runMany($commands);
+            $results = $this->runGit($commands, 'fetching exact locked commits', static fn ($id): string => $chunks[$id][0].' ('.count($chunks[$id][1]).' SHA)');
         } finally {
             $this->unlockMirrors($locks);
         }
@@ -762,7 +818,7 @@ final class Snapshot
         foreach ($results as $id => [$code, $out, $err]) {
             [$url, $chunk] = $chunks[$id];
             if ($code !== 0) {
-                $errors[$url] = trim($err !== '' ? $err : $out) ?: 'Cannot fetch '.implode(', ', $chunk)." from $url";
+                $errors[$url] = $this->gitError($err !== '' ? $err : $out, 'Cannot fetch '.implode(', ', $chunk)." from $url");
                 continue;
             }
             foreach ($chunk as $sha) {
@@ -929,9 +985,14 @@ final class Snapshot
         $handles = [];
         foreach ($dirs as $dir) {
             $handle = @fopen($dir.'.lock', 'c');
-            if ($handle !== false && flock($handle, LOCK_EX)) {
-                $handles[] = $handle;
+            if ($handle === false) {
+                continue;
             }
+            if (!flock($handle, LOCK_EX | LOCK_NB)) {
+                $this->log('waiting for another fast-composer process that is fetching into '.basename($dir).' ...');
+                flock($handle, LOCK_EX);
+            }
+            $handles[] = $handle;
         }
         return $handles;
     }

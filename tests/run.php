@@ -178,6 +178,16 @@ try {
         throw new RuntimeException('content-hash rewrite altered the lock file layout: '.$patched);
     }
     echo "content-hash-in-place: OK\n";
+
+    // Empty objects in composer.json must stay objects, or Composer rejects the schema.
+    $decoded = json_decode('{"name":"a/b","require":{},"extra":{},"autoload":{"psr-4":{}},"config":{"allow-plugins":{}},"keywords":[]}', true);
+    $encoded = FastComposer\ComposerJson::encode($decoded);
+    foreach (['"require": {}', '"extra": {}', '"psr-4": {}', '"allow-plugins": {}', '"keywords": []'] as $needle) {
+        if (!str_contains($encoded, $needle)) {
+            throw new RuntimeException("composer.json encoding lost $needle: $encoded");
+        }
+    }
+    echo "composer-json-empty-objects: OK\n";
 } finally {
     $rrmdir($base);
 }
