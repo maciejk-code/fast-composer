@@ -78,55 +78,73 @@ If no compatible snapshot exists yet, Fast Composer falls back to a normal Compo
 
 Initial priming is lazy: metadata already selected by regular Composer is reused from `composer.lock`, while Fast Composer indexes branch/tag refs without fetching `composer.json` for every ref. Metadata for a new or moved ref is fetched only when it is actually needed.
 
-## Benchmarks (v0.1)
+## Benchmarks
 
-The benchmark harness is committed with the project. Results below are medians of 3 runs on a GitHub Actions `ubuntu-24.04` runner using PHP 8.4.25, Composer 2.10.3 and Git 2.55.0. All measured update paths use `--no-install --no-plugins --no-scripts --no-audit`.
+`benchmarks/compare.sh` runs Composer and Fast Composer from the same warm state (Composer's VCS mirrors and metadata cache populated; Fast Composer's snapshot and mirrors populated) and reports the median of 5 runs, the number of network Git operations, and whether the lock file is **byte-identical** to the one Composer produced. Repositories are served by a local `git daemon`, so Composer takes its normal remote-VCS path (cached mirror + `git remote update`). A Git shim adds a fixed delay to every network Git operation.
 
-### Zero-latency local VCS control
+The position of the updated package in `repositories` matters for Composer: it initializes VCS repositories in order until it finds the package, so a package in the first repository is Composer's best case and one in the last repository its worst. Fast Composer does not depend on the position.
 
-This fixture uses 24 local filesystem VCS repositories with 8 additional unused branches per repository, so VCS/network latency is effectively absent.
+Measured on a 4-core Linux container, PHP 8.4.19, Composer 2.8.12, Git 2.43.0. These are synthetic fixtures (one-file repositories); validate on your real private-VCS workload before quoting general numbers.
 
-| Scenario | Composer | Fast Composer | Composer / Fast |
-| --- | ---: | ---: | ---: |
-| First Fast Composer invocation / cold snapshot | — | 0.851 s | — |
-| Warm targeted no-op update | 0.634 s | 0.695 s | 0.91x |
-| Targeted discovery of a new tag | 0.648 s | 0.713 s | 0.91x |
+### Private-VCS-like workload: 40 repositories, 40 ms per network Git operation
 
-### Remote-like VCS latency control
+| Scenario | Composer | Fast Composer | Speed-up | Composer Git net ops | Fast Git net ops | Same lock as Composer |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| targeted no-op, first repository | 0.422 s | 0.294 s | **1.44x** | 1 | 1 | 5/5 |
+| targeted no-op, middle repository | 4.940 s | 0.306 s | **16.14x** | 20 | 1 | 5/5 |
+| targeted no-op, last repository | 9.855 s | 0.295 s | **33.41x** | 40 | 1 | 5/5 |
+| broad no-op, TTL expired | 9.798 s | 1.973 s | **4.97x** | 40 | 40 | 5/5 |
+| broad no-op, within TTL | 9.917 s | 0.319 s | **31.09x** | 40 | 2 | 5/5 |
+| targeted new tag, middle repository | 5.119 s | 0.334 s | **15.33x** | 20 | 1 | 5/5 |
+| moved dev branch, first repository | 0.501 s | 0.302 s | **1.66x** | 1 | 1 | 5/5 |
+| moved dev branch, last repository | 10.215 s | 0.309 s | **33.06x** | 40 | 1 | 5/5 |
+| first invocation (cold snapshot), last repository | 10.172 s | 10.710 s | **0.95x** | 40 | 80 | 5/5 |
 
-The same shape is served through a local `git daemon`, with Linux `netem` injecting 15 ms of loopback delay. This is a controlled latency simulation, not a claim that it reproduces GitHub/SSH/private-network behavior exactly.
+### Zero-latency control: 30 repositories, no added delay
 
-| Scenario | Composer | Fast Composer | Composer / Fast |
-| --- | ---: | ---: | ---: |
-| First Fast Composer invocation / cold snapshot | — | 6.626 s | — |
-| Warm targeted no-op update | 1.169 s | 1.186 s | 0.99x |
-| Targeted discovery of a new tag | 1.277 s | 1.436 s | 0.89x |
+| Scenario | Composer | Fast Composer | Speed-up | Composer Git net ops | Fast Git net ops | Same lock as Composer |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| targeted no-op, first repository | 0.385 s | 0.253 s | **1.52x** | 1 | 1 | 5/5 |
+| targeted no-op, middle repository | 3.167 s | 0.269 s | **11.77x** | 15 | 1 | 5/5 |
+| targeted no-op, last repository | 6.002 s | 0.264 s | **22.73x** | 30 | 1 | 5/5 |
+| broad no-op, TTL expired | 6.119 s | 1.349 s | **4.54x** | 30 | 30 | 5/5 |
+| broad no-op, within TTL | 5.970 s | 0.252 s | **23.69x** | 30 | 2 | 5/5 |
+| targeted new tag, middle repository | 3.243 s | 0.293 s | **11.07x** | 15 | 1 | 5/5 |
+| moved dev branch, first repository | 0.451 s | 0.260 s | **1.73x** | 1 | 1 | 5/5 |
+| moved dev branch, last repository | 6.302 s | 0.253 s | **24.91x** | 30 | 1 | 5/5 |
+| first invocation (cold snapshot), last repository | 6.452 s | 6.662 s | **0.97x** | 30 | 60 | 5/5 |
 
-### Private-VCS-like workload
+### Before / after this optimization round (same harness, 40 ms workload)
 
-This fixture contains 40 VCS repositories, 20 root-required packages and 10 additional branches per repository. A Git shim adds 40 ms to network-like Git operations and counts those operations. This models the cost shape of many private VCS repositories without claiming to reproduce a particular GitHub/SSH deployment exactly.
-
-| Scenario | Composer | Fast Composer | Composer Git ops | Fast Git ops |
+| Scenario | Fast Composer v0.1 | Fast Composer now | v0.1 same lock as Composer | now |
 | --- | ---: | ---: | ---: | ---: |
-| Targeted no-op update | 0.849 s | **0.845 s** | 1 | 1 |
-| Broad no-op update | 5.239 s | **3.358 s** | 20 | 20 |
-| Moved explicit `dev-*` branch | 0.901 s | **0.844 s** | 1 | 1 |
+| targeted no-op, first repository | 0.436 s | 0.294 s | 0/5 | 5/5 |
+| targeted no-op, middle repository | 0.469 s | 0.306 s | 0/5 | 5/5 |
+| broad no-op, TTL expired | 9.455 s (80 ops) | 1.973 s (40 ops, parallel) | 0/5 | 5/5 |
+| broad no-op, within TTL | 5.743 s (40 ops) | 0.319 s (2 ops) | 0/5 | 5/5 |
+| targeted new tag, middle repository | 0.482 s (2 ops) | 0.334 s (1 op) | 0/5 | 5/5 |
+| first invocation (cold snapshot) | 14.021 s | 10.710 s | 5/5 | 5/5 |
 
-Both implementations selected the moved development branch correctly in all 3/3 runs.
+v0.1 locks differed from Composer's only cosmetically (dropped package `time`, `{}` rewritten as `[]`), but that produced diff noise on every update.
 
-Before the targeted-refresh optimization, the same workload shape required 14 Git network operations for a Fast Composer targeted no-op and 15 for a moved development branch. The optimized exact-branch path reduces both to a single Git network operation while keeping exact-SHA source validation. Timings from separate hosted runners should not be treated as laboratory-grade before/after measurements; the call-count reduction is the stronger deterministic signal.
+**Known weak spot:** the first invocation without a snapshot still runs a regular Composer solve and then indexes refs, so it is slightly slower than plain Composer (0.95x). See [First run](#first-run).
 
-**Current result:** targeted no-op updates are effectively at Composer parity in this synthetic private-VCS workload, moved explicit `dev-*` updates are slightly faster, and the broad private-VCS-like update is about **1.56x faster** (5.239 s / 3.358 s). Stable new-tag discovery is still modestly slower than standard Composer in these fixtures. A general performance claim should still be validated on the real private-SSH/VCS workload that motivated the project.
-
-Reproduce the measurements with:
+Reproduce:
 
 ```bash
-bash benchmarks/run.sh
-bash benchmarks/remote-latency.sh
-bash benchmarks/private-vcs-like.sh
+bash benchmarks/private-vcs-like.sh   # 40 repos, 40 ms per network Git op
+bash benchmarks/run.sh                # zero-latency control
+bash benchmarks/remote-latency.sh     # real loopback latency via tc netem (Linux, sudo)
+BENCH_REPOS=60 BENCH_GIT_DELAY_MS=150 bash benchmarks/compare.sh   # custom
 ```
 
-The remote-latency benchmark requires Linux `tc`/`netem` and permission to change the loopback qdisc. The synthetic Git fixtures use isolated temporary Composer homes and local Git daemons only.
+Knobs: `BENCH_REPOS`, `BENCH_EXTRA_BRANCHES`, `BENCH_RUNS`, `BENCH_GIT_DELAY_MS`, `BENCH_NETEM_MS`. With `GITHUB_STEP_SUMMARY` set, the table is appended to the job summary.
+
+## Performance tuning
+
+- `FAST_COMPOSER_JOBS` (default 8): concurrent network Git operations for broad refreshes, priming, dev-branch revalidation and `verify`.
+- `FAST_COMPOSER_IN_PROCESS=0`: run the Composer solver as a subprocess. By default it runs in-process when `composer` on `PATH` is a regular Composer phar and Xdebug is not loaded.
+- Fast Composer keeps a shallow Git mirror per VCS repository under its cache directory; `fast-composer update` refreshes it with a single `git fetch`.
 
 ## What gets refreshed
 
@@ -172,7 +190,7 @@ Snapshot/cache data lives outside the project working tree in the user's Compose
 
 Fast Composer does not accept, copy, persist, or log GitHub tokens, SSH private keys, `auth.json`, or other credentials.
 
-Its VCS refresh path invokes Git directly (`git ls-remote` / targeted fetch), so the VCS URL must already work with your normal Git authentication. SSH URLs work naturally when your SSH agent/key is configured. HTTPS URLs work when Git itself has credentials available through its normal credential mechanism.
+Its VCS refresh path invokes Git directly (`git fetch` into a local mirror, `git ls-remote` while priming), so the VCS URL must already work with your normal Git authentication. SSH URLs work naturally when your SSH agent/key is configured. HTTPS URLs work when Git itself has credentials available through its normal credential mechanism.
 
 A Composer-only OAuth token in `auth.json` is not automatically converted into Git credentials by Fast Composer. This is intentionally kept out of v0.1 to avoid duplicating or persisting credentials.
 
