@@ -28,6 +28,7 @@
 - `fast-composer require` failed with a schema error on a composer.json containing an empty object such as `"require": {}` (it was re-encoded as `[]`); empty objects are now preserved.
 - `require`/`update` with several packages refresh their repositories in one parallel batch (was one after another); `vendor/name=constraint` is recognized like `vendor/name:constraint`.
 - `require` keeps `config.allow-plugins` decisions Composer wrote to its working copy.
+- "Repository package name mismatch": a tag/branch whose `composer.json` has a different `name` (renamed package, fork, typo, different case) aborted the refresh. Like Composer, every version of a VCS repository now takes the name from its default branch. Lock validation accepts such a version only under exactly that name.
 - Branches/tags without a `composer.json` (e.g. `gh-pages`) are skipped like Composer does instead of failing the refresh.
 
 ### Benchmarks

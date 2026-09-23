@@ -29,6 +29,8 @@ final class Snapshot
     private array $reachable = [];
     /** @var array<string,true> Repositories whose tips were fetched during this process. */
     private array $fetchedTips = [];
+    /** @var array<string,string> Package name per repository, resolved during this process. */
+    private array $repositoryNames = [];
     /** @var null|callable(string):void */
     private $logger = null;
 
@@ -391,9 +393,7 @@ final class Snapshot
             if (is_array($existing) && ($existing['source']['reference'] ?? null) === $sha) {
                 $pkg = $existing;
             } else {
-                if (($meta['name'] ?? null) !== $package) {
-                    throw new \RuntimeException("Repository package name mismatch: expected $package");
-                }
+                // Like Composer, the repository's package name wins over the one on this branch.
                 $pkg = $this->packageFromMetadata($meta, $package, $version, $url, $sha);
                 $snapshot['packages'][$package][$version] = $pkg;
             }
@@ -569,9 +569,9 @@ final class Snapshot
                     continue;
                 }
                 $meta = $this->operationMetadata[$key];
-                if (($meta['name'] ?? null) !== $package) {
-                    throw new \RuntimeException("Repository package name mismatch for $url: expected $package");
-                }
+                // Composer names every version of a VCS repository after the composer.json on its
+                // default branch (VcsRepository::preProcess), so an old tag or branch with a
+                // different "name" (renamed package, fork, typo) is still this package.
                 $next[$version] = $this->packageFromMetadata($meta, $package, $version, $url, $ref['sha']);
             }
         }
@@ -1015,10 +1015,28 @@ final class Snapshot
 
     private function metadataMatches(array $lockedPackage, array $sourceComposer): bool
     {
-        if (($lockedPackage['name'] ?? null) !== ($sourceComposer['name'] ?? null)) {
-            return false;
+        $lockedName = strtolower((string) ($lockedPackage['name'] ?? ''));
+        if ($lockedName !== strtolower((string) ($sourceComposer['name'] ?? ''))) {
+            // A version may carry an old/other "name"; Composer then uses the name from the
+            // repository's default branch. Accept exactly that, nothing else.
+            $url = $lockedPackage['source']['url'] ?? null;
+            if (!is_string($url) || $lockedName === '' || $lockedName !== strtolower($this->repositoryPackageName($url))) {
+                return false;
+            }
         }
         return $this->metadataForCompare($lockedPackage) === $this->metadataForCompare($sourceComposer);
+    }
+
+    /** Package name Composer assigns to a VCS repository: composer.json name at the remote HEAD. */
+    private function repositoryPackageName(string $url): string
+    {
+        $key = $this->normalizeGitUrl($url);
+        if (!isset($this->repositoryNames[$key])) {
+            $probe = [];
+            $this->discoverRepositoryNames($probe, [$url]);
+            $this->repositoryNames[$key] = (string) $probe['repos'][$url]['name'];
+        }
+        return $this->repositoryNames[$key];
     }
 
     private function metadataForCompare(array $package): array

@@ -188,6 +188,30 @@ try {
         }
     }
     echo "composer-json-empty-objects: OK\n";
+
+    // An old tag with a different "name" (renamed package) belongs to the repository's package,
+    // exactly like Composer's VcsRepository treats it.
+    $renamed = $base.'/renamed';
+    mkdir($renamed);
+    Process::must(['git', 'init', '-q', '-b', 'main'], $renamed);
+    Process::must(['git', 'config', 'user.email', 'fast-composer-test@example.invalid'], $renamed);
+    Process::must(['git', 'config', 'user.name', 'fast-composer-test'], $renamed);
+    file_put_contents($renamed.'/composer.json', json_encode(['name' => 'acme/old-name'])."\n");
+    Process::must(['git', 'add', 'composer.json'], $renamed);
+    Process::must(['git', 'commit', '-q', '-m', '1'], $renamed);
+    Process::must(['git', 'tag', '1.0.0'], $renamed);
+    file_put_contents($renamed.'/composer.json', json_encode(['name' => 'acme/renamed'])."\n");
+    Process::must(['git', 'commit', '-q', '-am', '2'], $renamed);
+    $renamedRoot = $base.'/renamed-root';
+    mkdir($renamedRoot);
+    $renamedConfig = ['repositories' => [['type' => 'vcs', 'url' => $renamed]]];
+    file_put_contents($renamedRoot.'/composer.json', json_encode($renamedConfig)."\n");
+    $renamedState = [];
+    (new Snapshot($renamedRoot))->sync($renamedState, $renamedConfig);
+    if (($renamedState['packages']['acme/renamed']['1.0.0']['name'] ?? null) !== 'acme/renamed' || isset($renamedState['packages']['acme/old-name'])) {
+        throw new RuntimeException('old tag with a different name was not attributed to the repository package: '.json_encode(array_keys($renamedState['packages'] ?? [])));
+    }
+    echo "renamed-package-tags: OK\n";
 } finally {
     $rrmdir($base);
 }
