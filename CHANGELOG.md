@@ -15,9 +15,20 @@
 - The inner Composer run skips root-version guessing (`COMPOSER_ROOT_VERSION`) when nothing can reference the root package, and skips `stty` probing when output is not a terminal.
 - Removed a `composer config` subprocess per uncached GitHub ref.
 
+### Progress and troubleshooting
+
+- Timestamped progress lines, per-repository results for parallel Git work and a 5-second heartbeat naming the repositories still running; waiting on another process's mirror lock is reported.
+- `FAST_COMPOSER_DEBUG=1` logs every external command with exit code and duration.
+- Parallel Git runs with `GIT_TERMINAL_PROMPT=0`; credential failures come with a hint instead of hanging.
+- Warning when the lock contains a Composer plugin missing from `config.allow-plugins` (lock-only updates never trigger Composer's trust prompt, and CI's non-interactive install would refuse it).
+
 ### Fixed
 
 - Lock files written by Fast Composer are now byte-identical to Composer's: package `time` is preserved (commit author date, like Composer's GitDriver) and `content-hash` is patched in place instead of re-encoding the lock (which turned `{}` into `[]`).
+- `fast-composer require` failed with a schema error on a composer.json containing an empty object such as `"require": {}` (it was re-encoded as `[]`); empty objects are now preserved.
+- `require`/`update` with several packages refresh their repositories in one parallel batch (was one after another); `vendor/name=constraint` is recognized like `vendor/name:constraint`.
+- `require` keeps `config.allow-plugins` decisions Composer wrote to its working copy.
+- "Repository package name mismatch": a tag/branch whose `composer.json` has a different `name` (renamed package, fork, typo, different case) aborted the refresh. Like Composer, every version of a VCS repository now takes the name from its default branch. Lock validation accepts such a version only under exactly that name.
 - Branches/tags without a `composer.json` (e.g. `gh-pages`) are skipped like Composer does instead of failing the refresh.
 
 ### Benchmarks

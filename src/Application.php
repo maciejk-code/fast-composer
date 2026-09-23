@@ -5,6 +5,14 @@ final class Application
 {
     public const VERSION = '0.1.0';
 
+    private float $startedAt = 0.0;
+
+    /** Progress line with the time elapsed since the command started. */
+    private function log(string $message): void
+    {
+        fwrite(STDOUT, sprintf("[fast-composer %5.1fs] %s\n", microtime(true) - $this->startedAt, $message));
+    }
+
     public function run(array $args): int
     {
         $cmd = $args[0] ?? 'help';
@@ -31,6 +39,10 @@ final class Application
         }
 
         $snapshot = new Snapshot($root);
+        $this->startedAt = microtime(true);
+        $snapshot->setLogger(function (string $message): void {
+            $this->log($message);
+        });
         // The in-process Composer solver may exit() directly; never leave work files behind.
         register_shutdown_function([$snapshot, 'cleanupWorkFiles']);
         $operationLock = null;
@@ -60,8 +72,8 @@ final class Application
             }
 
             if ($cmd === 'refresh') {
-                fwrite(STDOUT, "[fast-composer] rebuilding full VCS snapshot\n");
-                fwrite(STDOUT, "[fast-composer] this is the exhaustive path: it may read metadata for many refs; time depends on repository/ref count, Git/SSH latency and cache warmth\n");
+                $this->log("rebuilding full VCS snapshot");
+                $this->log("this is the exhaustive path: it may read metadata for many refs; time depends on repository/ref count, Git/SSH latency and cache warmth");
                 $state = $snapshot->buildFromLockAndCache($rootCfg);
                 printf(
                     "snapshot repos=%d versions=%d\n",
@@ -96,42 +108,42 @@ final class Application
                 // cover yet (all of them on a first run, only added ones after a change of
                 // "repositories") in parallel, then continue on the fast path.
                 $pending = $this->vcsRepositoryCount($rootCfg) - $this->syncedRepositoryCount($state, $rootCfg);
-                printf(
-                    "[fast-composer] %s: synchronizing %d VCS repositories (one parallel git fetch each)\n",
+                $this->log(sprintf(
+                    "%s: synchronizing %d VCS repositories (one parallel git fetch each)",
                     $state ? 'repositories changed' : 'no snapshot yet',
                     $pending
-                );
+                ));
                 $synced = $snapshot->sync($state, $rootCfg);
-                printf(
-                    "[fast-composer] snapshot ready (synchronized=%d, repos=%d, versions=%d)\n",
+                $this->log(sprintf(
+                    "snapshot ready (synchronized=%d, repos=%d, versions=%d)",
                     $synced,
                     count($state['repos'] ?? []),
                     array_sum(array_map('count', $state['packages'] ?? []))
-                );
+                ));
             }
 
             $ttl = $this->ttl();
             if ($cmd === 'require') {
-                fwrite(STDOUT, "[fast-composer] refreshing requested VCS ref; network/SSH latency can dominate this step\n");
+                $this->log("refreshing requested VCS repositories");
                 $this->refreshForRequire($snapshot, $state, $args);
             } else {
                 $targets = $this->packageArguments(array_slice($args, 1));
                 if ($targets === []) {
                     $count = $snapshot->refreshAllIfStale($state, $rootCfg, $ttl);
                     if ($count > 0) {
-                        printf("[fast-composer] refreshed %d VCS repositories (TTL %ds)\n", $count, $ttl);
+                        $this->log(sprintf("refreshed %d VCS repositories (TTL %ds)", $count, $ttl));
                     } else {
                         // Explicit mutable refs are always revalidated, regardless of the broad TTL.
                         // A full refresh above has already re-read every branch tip.
                         $devCount = $this->refreshExplicitDevRequirements($snapshot, $state, $rootCfg);
                         if ($devCount > 0) {
-                            printf("[fast-composer] revalidated %d explicit dev branch refs\n", $devCount);
+                            $this->log(sprintf("revalidated %d explicit dev branch refs", $devCount));
                         }
                     }
                 } else {
                     $count = $this->refreshTargetedUpdates($snapshot, $state, $rootCfg, $targets);
                     if ($count > 0) {
-                        printf("[fast-composer] refreshed %d targeted VCS repositories\n", $count);
+                        $this->log(sprintf("refreshed %d targeted VCS repositories", $count));
                     }
                 }
             }
@@ -163,7 +175,8 @@ final class Application
             unlink($fastLock);
         }
 
-        fwrite(STDOUT, "[fast-composer] solving dependency graph from cached snapshot (lock only)\n");
+        $this->log("solving dependency graph with Composer from the cached snapshot (lock only; Composer's own output follows; its security audit queries packagist.org unless --no-audit)");
+        $solveStart = microtime(true);
         $env = ['COMPOSER' => $fastComposer] + $this->solverEnvironment($rootCfg, $root, $snapshot);
         $code = InProcessComposer::run($args, $root, $env);
         if ($code === null) {
@@ -186,7 +199,7 @@ final class Application
         }
 
         if ($this->hasFlag($args, '--dry-run')) {
-            fwrite(STDOUT, "[fast-composer] dry-run; real composer files unchanged\n");
+            $this->log("dry-run; real composer files unchanged");
             return 0;
         }
 
@@ -203,17 +216,21 @@ final class Application
                     unset($rootCfg[$key]);
                 }
             }
+            // Composer records "Do you trust this plugin?" answers in config.allow-plugins of
+            // the file it edits (the temporary one); keep them in the real composer.json.
+            if (array_key_exists('allow-plugins', $temporaryRoot['config'] ?? [])) {
+                $rootCfg['config']['allow-plugins'] = $temporaryRoot['config']['allow-plugins'];
+            }
         }
 
-        fwrite(STDOUT, "[fast-composer] Composer solve finished; validating changed VCS metadata against the exact locked SHA\n");
-        fwrite(STDOUT, "[fast-composer] validation can pause here if an exact SHA is not cached: Fast Composer performs a shallow git fetch; duration depends on changed package count and Git/SSH/network latency\n");
+        $this->log(sprintf("Composer solve finished (%.1fs); validating changed VCS packages against their exact locked SHA", microtime(true) - $solveStart));
         $afterLock = $snapshot->readLock($fastLock);
         $snapshot->validateChangedPackages($beforeLock, $afterLock, $rootCfg);
         $snapshot->fixContentHash($fastLock, $rootCfg);
-        fwrite(STDOUT, "[fast-composer] validation complete; publishing composer files\n");
+        $this->log("validation complete; publishing composer files");
 
         $newComposer = ($args[0] ?? null) === 'require'
-            ? json_encode($rootCfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)."\n"
+            ? ComposerJson::encode($rootCfg)
             : null;
         $newLock = file_get_contents($fastLock);
         if ($newLock === false) {
@@ -223,7 +240,8 @@ final class Application
         $this->publishAtomically($root, $newComposer, $newLock);
         $snapshot->mergeLockIntoSnapshot($state, $rootCfg, $snapshot->readLock());
 
-        fwrite(STDOUT, "[fast-composer] lock verified and published\n");
+        $this->warnAboutUnapprovedPlugins($rootCfg, $snapshot->readLock());
+        $this->log("lock verified and published; done");
         return 0;
     }
 
@@ -268,44 +286,97 @@ final class Application
         return $env;
     }
 
+    /**
+     * Lock-only updates never install, so Composer never asks "Do you trust this plugin?". A
+     * later non-interactive `composer install` (CI) would then refuse the plugin: say so now.
+     */
+    private function warnAboutUnapprovedPlugins(array $rootCfg, array $lock): void
+    {
+        $allowed = $rootCfg['config']['allow-plugins'] ?? [];
+        if ($allowed === true) {
+            return;
+        }
+        $allowed = is_array($allowed) ? $allowed : [];
+
+        foreach (array_merge($lock['packages'] ?? [], $lock['packages-dev'] ?? []) as $package) {
+            $name = $package['name'] ?? null;
+            if (($package['type'] ?? null) !== 'composer-plugin' || !is_string($name)) {
+                continue;
+            }
+            $decision = null;
+            foreach ($allowed as $pattern => $value) {
+                if (is_string($pattern) && fnmatch(strtolower($pattern), strtolower($name))) {
+                    $decision = $value;
+                    break;
+                }
+            }
+            if ($decision === null) {
+                $this->log("WARNING: $name is a Composer plugin not listed in config.allow-plugins; a non-interactive `composer install` will refuse it. Decide with: composer config allow-plugins.$name true   (or false)");
+            }
+        }
+    }
+
     private function refreshForRequire(Snapshot $snapshot, array &$state, array $args): void
     {
-        $targets = $this->packageArguments(array_slice($args, 1));
-        foreach ($targets as $spec) {
-            [$name, $constraint] = array_pad(explode(':', $spec, 2), 2, null);
+        $branches = [];
+        $names = [];
+        foreach ($this->packageArguments(array_slice($args, 1)) as $spec) {
+            [$name, $constraint] = $this->splitPackageSpec($spec);
             if (!$this->isManagedPackage($state, $name)) {
                 continue;
             }
-
             $branch = is_string($constraint) ? $this->explicitDevBranch($constraint) : null;
             if ($branch !== null) {
-                $snapshot->ensureBranch($state, $name, $branch);
+                $branches[] = [$name, $branch];
             } else {
-                $snapshot->refreshPackages($state, [$name]);
+                $names[] = $name;
             }
         }
+
+        // All requested repositories are fetched in one parallel batch.
+        $snapshot->ensureBranches($state, $branches);
+        if ($names !== []) {
+            $snapshot->refreshPackages($state, $names);
+        }
+    }
+
+    /**
+     * Split "vendor/name:constraint" (also "=" or a space, as Composer accepts).
+     *
+     * @return array{0:string,1:?string}
+     */
+    private function splitPackageSpec(string $spec): array
+    {
+        $parts = preg_split('/[:= ]/', trim($spec), 2) ?: [$spec];
+        $constraint = isset($parts[1]) ? trim($parts[1]) : null;
+        return [strtolower($parts[0]), $constraint === '' ? null : $constraint];
     }
 
     /** @param list<string> $targets */
     private function refreshTargetedUpdates(Snapshot $snapshot, array &$state, array $rootCfg, array $targets): int
     {
-        $count = 0;
+        $branches = [];
+        $patterns = [];
         foreach ($targets as $spec) {
-            [$name, $temporaryConstraint] = array_pad(explode(':', $spec, 2), 2, null);
+            [$name, $temporaryConstraint] = $this->splitPackageSpec($spec);
             if ($this->isManagedPackage($state, $name)) {
-                $constraint = is_string($temporaryConstraint) && $temporaryConstraint !== ''
-                    ? $temporaryConstraint
-                    : $this->rootConstraintForPackage($rootCfg, $name);
+                $constraint = $temporaryConstraint ?? $this->rootConstraintForPackage($rootCfg, $name);
                 $branch = is_string($constraint) ? $this->explicitDevBranch($constraint) : null;
                 if ($branch !== null) {
-                    $snapshot->ensureBranch($state, $name, $branch);
-                    $count++;
+                    $branches[] = [$name, $branch];
                     continue;
                 }
             }
 
             // Preserve wildcard and non-dev targeted update behavior.
-            $count += $snapshot->refreshPackages($state, [$spec]);
+            $patterns[] = $name;
+        }
+
+        // All targeted repositories are fetched in one parallel batch.
+        $snapshot->ensureBranches($state, $branches);
+        $count = count($branches);
+        if ($patterns !== []) {
+            $count += $snapshot->refreshPackages($state, $patterns);
         }
         return $count;
     }
@@ -363,7 +434,7 @@ final class Application
             if (!is_string($arg) || $arg === '' || str_starts_with($arg, '-')) {
                 continue;
             }
-            $name = explode(':', $arg, 2)[0];
+            $name = preg_split('/[:= ]/', $arg, 2)[0];
             if (str_contains($name, '/')) {
                 $result[] = $arg;
             }

@@ -143,6 +143,16 @@ BENCH_REPOS=60 BENCH_GIT_DELAY_MS=150 bash benchmarks/compare.sh   # custom
 
 Knobs: `BENCH_REPOS`, `BENCH_EXTRA_BRANCHES`, `BENCH_RUNS`, `BENCH_GIT_DELAY_MS`, `BENCH_NETEM_MS`. With `GITHUB_STEP_SUMMARY` set, the table is appended to the job summary.
 
+## Progress output and troubleshooting
+
+Every line is prefixed with the time since the command started, e.g. `[fast-composer  12.1s]`. Network Git work reports each repository as it finishes (`[3/40] <url> ok (0.4s)`) and, every 5 seconds, which repositories it is still waiting on. A repository that never finishes usually means Git/SSH is waiting for an unreachable host/VPN or for a passphrase/host-key confirmation; run `git ls-remote <url>` once by hand.
+
+- `FAST_COMPOSER_DEBUG=1` prints every external command with its exit code and duration (stderr).
+- Parallel Git operations run with `GIT_TERMINAL_PROMPT=0`: a missing HTTPS credential fails with a hint instead of hanging on an invisible prompt.
+- The step "solving dependency graph with Composer" is Composer itself. Its security audit queries packagist.org after every update/require; for quick local iterations pass `--no-audit` (CI still audits).
+- Several packages at once work like in Composer: `fast-composer require firma/plugin:^1.0 firma/plugin2:^1.0` (all their repositories are refreshed in one parallel batch).
+- Lock-only updates never install, so Composer never asks "Do you trust this plugin?". Fast Composer warns when the lock contains a `composer-plugin` not listed in `config.allow-plugins`, because a non-interactive `composer install` would refuse it; decide with `composer config allow-plugins.vendor/plugin true`.
+
 ## Performance tuning
 
 - `FAST_COMPOSER_JOBS` (default 8): concurrent network Git operations for the first-run sync, broad refreshes, dev-branch revalidation and `verify`.

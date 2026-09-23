@@ -21,6 +21,7 @@ final class Process
         }
 
         $spec = [0 => STDIN, 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+        $start = microtime(true);
         $process = proc_open($args, $spec, $pipes, $cwd);
         if (!is_resource($process)) {
             throw new \RuntimeException('Cannot start process: '.self::display($args));
@@ -31,7 +32,9 @@ final class Process
         fclose($pipes[1]);
         fclose($pipes[2]);
 
-        return [proc_close($process), $stdout === false ? '' : $stdout, $stderr === false ? '' : $stderr];
+        $code = proc_close($process);
+        self::debug($args, $code, microtime(true) - $start);
+        return [$code, $stdout === false ? '' : $stdout, $stderr === false ? '' : $stderr];
     }
 
     /**
@@ -40,15 +43,26 @@ final class Process
      * Network-bound Git operations spend nearly all their time waiting on the remote, so
      * overlapping them hides latency without changing what each individual command does.
      *
+     * $progress receives ('done', key, result, seconds, done, total) when a command finishes and
+     * ('wait', running keys, null, seconds since start, done, total) every few seconds while
+     * commands are still running, so callers can show where time goes.
+     *
+     * Commands run without a terminal prompt (GIT_TERMINAL_PROMPT=0): several concurrent
+     * credential prompts would look like a hang, so a missing credential fails fast instead.
+     *
      * @param array<array-key,array{0:list<string>,1:?string}> $commands
      * @return array<array-key,array{0:int,1:string,2:string}> results keyed like $commands
      */
-    public static function runMany(array $commands, ?int $jobs = null): array
+    public static function runMany(array $commands, ?int $jobs = null, ?callable $progress = null): array
     {
         $jobs ??= self::defaultJobs();
         $queue = $commands;
         $running = [];
         $results = [];
+        $total = count($commands);
+        $started = microtime(true);
+        $lastWait = $started;
+        $env = getenv() + ['GIT_TERMINAL_PROMPT' => '0'];
 
         while ($queue !== [] || $running !== []) {
             while ($queue !== [] && count($running) < $jobs) {
@@ -56,7 +70,7 @@ final class Process
                 [$args, $cwd] = $queue[$key];
                 unset($queue[$key]);
 
-                $process = proc_open($args, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $cwd);
+                $process = proc_open($args, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $cwd, $env);
                 if (!is_resource($process)) {
                     $results[$key] = [127, '', 'Cannot start process: '.self::display($args)];
                     continue;
@@ -64,7 +78,7 @@ final class Process
                 fclose($pipes[0]);
                 stream_set_blocking($pipes[1], false);
                 stream_set_blocking($pipes[2], false);
-                $running[$key] = ['process' => $process, 'pipes' => [1 => $pipes[1], 2 => $pipes[2]], 'out' => ['', '', '']];
+                $running[$key] = ['process' => $process, 'pipes' => [1 => $pipes[1], 2 => $pipes[2]], 'out' => ['', '', ''], 'start' => microtime(true), 'args' => $args];
             }
 
             $read = [];
@@ -92,10 +106,21 @@ final class Process
                 }
                 if ($job['pipes'] === []) {
                     $results[$key] = [proc_close($job['process']), $job['out'][1], $job['out'][2]];
+                    $seconds = microtime(true) - $job['start'];
+                    self::debug($job['args'], $results[$key][0], $seconds);
                     unset($running[$key]);
+                    if ($progress !== null) {
+                        $progress('done', $key, $results[$key], $seconds, count($results), $total);
+                    }
                 }
             }
             unset($job);
+
+            $now = microtime(true);
+            if ($progress !== null && $running !== [] && $now - $lastWait >= self::HEARTBEAT_SECONDS) {
+                $lastWait = $now;
+                $progress('wait', array_keys($running), null, $now - $started, count($results), $total);
+            }
         }
 
         $ordered = [];
@@ -154,7 +179,19 @@ final class Process
             }
         }
 
-        return [proc_close($process), $out[1], $out[2]];
+        $code = proc_close($process);
+        self::debug($args, $code, 0.0);
+        return [$code, $out[1], $out[2]];
+    }
+
+    private const HEARTBEAT_SECONDS = 5;
+
+    /** With FAST_COMPOSER_DEBUG=1, print every external command with its exit code and duration. */
+    public static function debug(array $args, int $code, float $seconds): void
+    {
+        if (getenv('FAST_COMPOSER_DEBUG') === '1') {
+            fwrite(STDERR, sprintf("[fast-composer debug] %.2fs exit=%d %s\n", $seconds, $code, self::display($args)));
+        }
     }
 
     public static function defaultJobs(): int
@@ -177,7 +214,7 @@ final class Process
         return $stdout;
     }
 
-    private static function display(array $args): string
+    public static function display(array $args): string
     {
         return implode(' ', array_map(
             static fn (string $arg): string => preg_match('/^[A-Za-z0-9_\-\.\/:=@]+$/', $arg) ? $arg : escapeshellarg($arg),
