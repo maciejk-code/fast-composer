@@ -6,11 +6,12 @@ final class ComposerSolver
 {
     /**
      * @param list<string> $args Composer arguments, e.g. ['update', 'vendor/pkg', '--no-install']
+     * @param list<string> $packageFiles the snapshot's packages.json files
      * @return int Composer's exit code
      */
-    public static function run(array $args, string $root, string $composerFile, array $rootConfig, string $packagesJson): int
+    public static function run(array $args, string $root, string $composerFile, array $rootConfig, array $packageFiles): int
     {
-        $env = ['COMPOSER' => $composerFile] + self::environment($rootConfig, $root, $packagesJson);
+        $env = ['COMPOSER' => $composerFile] + self::environment($rootConfig, $root, $packageFiles);
 
         $code = InProcessComposer::run($args, $root, $env);
         if ($code !== null) {
@@ -37,7 +38,7 @@ final class ComposerSolver
      *
      * @return array<string,string>
      */
-    private static function environment(array $rootConfig, string $root, string $packagesJson): array
+    private static function environment(array $rootConfig, string $root, array $packageFiles): array
     {
         $env = [];
 
@@ -51,7 +52,7 @@ final class ComposerSolver
             $composerJson = (string) @file_get_contents($root.'/composer.json');
             $safe = !str_contains($composerJson, 'self.version');
             if ($safe && $rootName !== null) {
-                foreach ([$packagesJson, $root.'/composer.lock'] as $path) {
+                foreach (array_merge($packageFiles, [$root.'/composer.lock']) as $path) {
                     $contents = is_file($path) ? @file_get_contents($path) : '';
                     if ($contents === false || str_contains(strtolower($contents), '"'.$rootName.'"')) {
                         $safe = false;
