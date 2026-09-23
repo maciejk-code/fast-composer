@@ -276,6 +276,10 @@ The repository maintains tests for:
 - external cache + no working-tree scratch files,
 - lock-only accelerated updates (no `vendor/` materialization),
 - installation as a global Composer binary.
+- byte-identical results to plain Composer for default branches, branch aliases, unparseable and `v`-prefixed tags, renamed packages, repository `exclude`, and `require` formatting (`tests/parity-contract.sh`),
+- HTTPS credentials from `auth.json`, fallback to Git's own authentication, and a clear failure without credentials (`tests/auth-contract.sh`).
+
+Run everything locally with `composer check` (PHPStan, unit tests, all contracts).
 
 ## Code layout
 

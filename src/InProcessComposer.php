@@ -26,7 +26,7 @@ final class InProcessComposer
             $_SERVER[$name] = $value;
             $_ENV[$name] = $value;
         }
-        $previousLocale = setlocale(LC_ALL, 0);
+        $previousLocale = setlocale(LC_ALL, '0');
         $previousReporting = error_reporting();
         $previousMemory = ini_get('memory_limit');
         $previousDisplayErrors = ini_get('display_errors');
@@ -68,12 +68,8 @@ final class InProcessComposer
                 setlocale(LC_ALL, $previousLocale);
             }
             error_reporting($previousReporting);
-            if ($previousMemory !== false) {
-                @ini_set('memory_limit', $previousMemory);
-            }
-            if ($previousDisplayErrors !== false) {
-                @ini_set('display_errors', $previousDisplayErrors);
-            }
+            @ini_set('memory_limit', (string) $previousMemory);
+            @ini_set('display_errors', (string) $previousDisplayErrors);
         }
     }
 

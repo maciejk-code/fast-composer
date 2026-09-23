@@ -152,11 +152,12 @@ final class Process
 
         while ($open !== [] || $stdin !== null) {
             $read = array_values($open);
-            $write = $stdin !== null ? [$stdin] : null;
+            $write = $stdin !== null ? [$stdin] : [];
             $except = null;
             @stream_select($read, $write, $except, 1);
 
-            if ($stdin !== null && $write) {
+            // stream_select() reduces $write to the streams that are ready.
+            if ($stdin !== null && in_array($stdin, $write, true)) {
                 $written = fwrite($stdin, $input);
                 if ($written === false) {
                     $input = '';

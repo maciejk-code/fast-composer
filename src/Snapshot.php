@@ -115,7 +115,7 @@ final class Snapshot
     }
 
     /** Rebuild the snapshot from scratch (`fast-composer refresh`). */
-    public function buildFromLockAndCache(array $rootConfig): array
+    public function rebuild(array $rootConfig): array
     {
         $snapshot = [];
         $this->sync($snapshot, $rootConfig, true);

@@ -142,29 +142,20 @@ final class GitMirror
     }
 
     /**
-     * composer.json (with Composer's release "time") of commits already in the mirror, read
-     * with a single `git cat-file --batch`.
+     * composer.json of commits already in the mirror, read with a single `git cat-file --batch`.
      *
      * @param list<string> $shas
-     * @return array<string,?array> per SHA; null when the commit has no readable composer.json
+     * @return array<string,?array<string,mixed>> per SHA; null when the commit has no readable composer.json
      */
     public function metadata(string $url, array $shas): array
     {
-        $shas = array_values(array_unique(array_filter($shas, static fn ($sha): bool => is_string($sha) && $sha !== '')));
+        $shas = array_values(array_unique(array_filter($shas, static fn (string $sha): bool => $sha !== '')));
         $missing = array_values(array_filter($shas, fn (string $sha): bool => !array_key_exists($this->key($url, $sha), $this->metadata)));
 
         if ($missing !== []) {
-            $specs = [];
-            foreach ($missing as $sha) {
-                $specs[] = $sha.':composer.json';
-                $specs[] = $sha.'^{commit}';
-            }
-            $objects = $this->catFile($this->mirrorDir($url), $specs);
+            $objects = $this->catFile($this->mirrorDir($url), array_map(static fn (string $sha): string => $sha.':composer.json', $missing));
             foreach ($missing as $i => $sha) {
-                $this->metadata[$this->key($url, $sha)] = $this->withReleaseDate(
-                    $this->decodeComposerJson($objects[2 * $i] ?? null),
-                    $objects[2 * $i + 1] ?? null
-                );
+                $this->metadata[$this->key($url, $sha)] = $this->decodeComposerJson($objects[$i] ?? null);
             }
         }
 
@@ -224,7 +215,7 @@ final class GitMirror
 
         $key = $this->key($url, $sha);
         $this->reachable[$key] = true;
-        $this->metadata[$key] = $this->withReleaseDate($this->decodeComposerJson($objects[1] ?? null), $objects[0]);
+        $this->metadata[$key] = $this->decodeComposerJson($objects[1] ?? null);
         if ($this->metadata[$key] === null) {
             throw new \RuntimeException('Invalid composer.json at '.$sha);
         }
@@ -334,7 +325,7 @@ final class GitMirror
         foreach ($shasByUrl as $url => $shas) {
             $shas = array_values(array_unique(array_filter(
                 $shas,
-                fn ($sha): bool => is_string($sha) && $sha !== '' && !isset($this->reachable[$this->key($url, $sha)])
+                fn (string $sha): bool => $sha !== '' && !isset($this->reachable[$this->key($url, $sha)])
             )));
             if ($shas === []) {
                 continue;
@@ -431,7 +422,7 @@ final class GitMirror
     /**
      * Run Git commands concurrently while holding the locks of the mirrors they write to.
      *
-     * @param array<array-key,array{0:list<string>,1:?string}> $commands
+     * @param array<array-key,array{0:list<string>,1:?string,2?:array<string,string>}> $commands [args, cwd, credentials environment]
      * @param list<string> $urls repositories whose mirrors the commands write
      * @param callable(array-key):string $labelOf
      */
@@ -481,7 +472,7 @@ final class GitMirror
      * Run Git commands concurrently and report per-repository progress plus a heartbeat naming
      * what is still running, so a slow or stuck remote is visible instead of silent.
      *
-     * @param array<array-key,array{0:list<string>,1:?string}> $commands
+     * @param array<array-key,array{0:list<string>,1:?string,2?:array<string,string>}> $commands [args, cwd, credentials environment]
      * @param callable(array-key):string $labelOf
      */
     private function run(array $commands, string $what, callable $labelOf): array
@@ -510,6 +501,10 @@ final class GitMirror
         return $results;
     }
 
+    /**
+     * @param array<array-key,array{0:list<string>,1:?string,2?:array<string,string>}> $commands
+     * @return array<array-key,array{0:int,1:string,2:string}>
+     */
     private function runWithProgress(array $commands, callable $labelOf): array
     {
         return Process::runMany($commands, null, function (string $event, $subject, ?array $result, float $seconds, int $done, int $total) use ($labelOf): void {
@@ -586,22 +581,6 @@ final class GitMirror
             return null;
         }
         return is_array($data) ? $data : null;
-    }
-
-    /**
-     * Same release date Composer's GitDriver records: the commit author date, unless
-     * composer.json declares its own "time".
-     */
-    private function withReleaseDate(?array $meta, ?array $commit): ?array
-    {
-        if ($meta === null || (isset($meta['time']) && is_string($meta['time']))) {
-            return $meta;
-        }
-        if ($commit !== null && $commit['type'] === 'commit'
-            && preg_match('/^author .* (\d+) [+-]\d{4}$/m', $commit['content'], $m)) {
-            $meta['time'] = (new \DateTimeImmutable('@'.$m[1]))->setTimezone(new \DateTimeZone('UTC'))->format(DATE_RFC3339);
-        }
-        return $meta;
     }
 
     private function log(string $message): void
