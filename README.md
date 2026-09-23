@@ -86,49 +86,49 @@ If no compatible snapshot exists yet, Fast Composer does **not** run a regular C
 
 The position of the updated package in `repositories` matters for Composer: it initializes VCS repositories in order until it finds the package, so a package in the first repository is Composer's best case and one in the last repository its worst. Fast Composer does not depend on the position.
 
-Measured on a 4-core Linux container, PHP 8.4.19, Composer 2.8.12, Git 2.43.0. These are synthetic fixtures (one-file repositories); validate on your real private-VCS workload before quoting general numbers.
+Measured on a 4-core Linux container, PHP 8.4.19, Composer 2.8.12, Git 2.43.0, with package data produced by Composer's own `VcsRepository` (current architecture). The first invocation also asks each remote for its default branch once (in parallel), hence 2 network operations per repository there. These are synthetic fixtures (one-file repositories); validate on your real private-VCS workload before quoting general numbers.
 
 ### Private-VCS-like workload: 40 repositories, 40 ms per network Git operation
 
 | Scenario | Composer | Fast Composer | Speed-up | Composer Git net ops | Fast Git net ops | Same lock as Composer |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| targeted no-op, first repository | 0.433 s | 0.309 s | **1.40x** | 1 | 1 | 5/5 |
-| targeted no-op, middle repository | 5.074 s | 0.256 s | **19.82x** | 20 | 1 | 5/5 |
-| targeted no-op, last repository | 9.952 s | 0.308 s | **32.31x** | 40 | 1 | 5/5 |
-| broad no-op, TTL expired | 10.034 s | 0.898 s | **11.17x** | 40 | 40 | 5/5 |
-| broad no-op, within TTL | 9.945 s | 0.328 s | **30.32x** | 40 | 2 | 5/5 |
-| targeted new tag, middle repository | 5.283 s | 0.325 s | **16.26x** | 20 | 1 | 5/5 |
-| moved dev branch, first repository | 0.520 s | 0.323 s | **1.61x** | 1 | 1 | 5/5 |
-| moved dev branch, last repository | 10.334 s | 0.311 s | **33.23x** | 40 | 1 | 5/5 |
-| first invocation, new clone (shared mirrors warm), last repository | 10.236 s | 1.253 s | **8.17x** | 40 | 40 | 5/5 |
-| first invocation (empty cache), last repository | 10.164 s | 2.192 s | **4.64x** | 40 | 40 | 5/5 |
+| targeted no-op, first repository | 0.456 s | 0.331 s | **1.38x** | 1 | 1 | 5/5 |
+| targeted no-op, middle repository | 5.152 s | 0.286 s | **18.01x** | 20 | 1 | 5/5 |
+| targeted no-op, last repository | 9.954 s | 0.362 s | **27.50x** | 40 | 1 | 5/5 |
+| broad no-op, TTL expired | 10.000 s | 0.957 s | **10.45x** | 40 | 40 | 5/5 |
+| broad no-op, within TTL | 9.980 s | 0.384 s | **25.99x** | 40 | 2 | 5/5 |
+| targeted new tag, middle repository | 5.178 s | 0.385 s | **13.45x** | 20 | 1 | 5/5 |
+| moved dev branch, first repository | 0.510 s | 0.349 s | **1.46x** | 1 | 1 | 5/5 |
+| moved dev branch, last repository | 10.260 s | 0.383 s | **26.79x** | 40 | 1 | 5/5 |
+| first invocation, new clone (shared mirrors warm), last repository | 10.202 s | 1.336 s | **7.64x** | 40 | 40 | 5/5 |
+| first invocation (empty cache), last repository | 10.227 s | 2.906 s | **3.52x** | 40 | 80 | 5/5 |
 
 ### Zero-latency control: 30 repositories, no added delay
 
 | Scenario | Composer | Fast Composer | Speed-up | Composer Git net ops | Fast Git net ops | Same lock as Composer |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| targeted no-op, first repository | 0.418 s | 0.264 s | **1.58x** | 1 | 1 | 5/5 |
-| targeted no-op, middle repository | 3.231 s | 0.216 s | **14.96x** | 15 | 1 | 5/5 |
-| targeted no-op, last repository | 6.287 s | 0.265 s | **23.72x** | 30 | 1 | 5/5 |
-| broad no-op, TTL expired | 6.242 s | 0.576 s | **10.84x** | 30 | 30 | 5/5 |
-| broad no-op, within TTL | 6.417 s | 0.278 s | **23.08x** | 30 | 2 | 5/5 |
-| targeted new tag, middle repository | 3.385 s | 0.283 s | **11.96x** | 15 | 1 | 5/5 |
-| moved dev branch, first repository | 0.462 s | 0.270 s | **1.71x** | 1 | 1 | 5/5 |
-| moved dev branch, last repository | 6.753 s | 0.272 s | **24.83x** | 30 | 1 | 5/5 |
-| first invocation, new clone (shared mirrors warm), last repository | 6.510 s | 0.819 s | **7.95x** | 30 | 30 | 5/5 |
-| first invocation (empty cache), last repository | 6.566 s | 1.674 s | **3.92x** | 30 | 30 | 5/5 |
+| targeted no-op, first repository | 0.402 s | 0.268 s | **1.50x** | 1 | 1 | 5/5 |
+| targeted no-op, middle repository | 3.168 s | 0.240 s | **13.20x** | 15 | 1 | 5/5 |
+| targeted no-op, last repository | 6.132 s | 0.313 s | **19.59x** | 30 | 1 | 5/5 |
+| broad no-op, TTL expired | 6.103 s | 0.621 s | **9.83x** | 30 | 30 | 5/5 |
+| broad no-op, within TTL | 6.185 s | 0.322 s | **19.21x** | 30 | 2 | 5/5 |
+| targeted new tag, middle repository | 3.268 s | 0.315 s | **10.37x** | 15 | 1 | 5/5 |
+| moved dev branch, first repository | 0.460 s | 0.305 s | **1.51x** | 1 | 1 | 5/5 |
+| moved dev branch, last repository | 6.576 s | 0.328 s | **20.05x** | 30 | 1 | 5/5 |
+| first invocation, new clone (shared mirrors warm), last repository | 6.408 s | 0.926 s | **6.92x** | 30 | 30 | 5/5 |
+| first invocation (empty cache), last repository | 6.400 s | 1.808 s | **3.54x** | 30 | 60 | 5/5 |
 
 ### Before / after this optimization round (same harness, 40 ms workload)
 
 | Scenario | Fast Composer v0.1 | Fast Composer now | v0.1 same lock as Composer | now |
 | --- | ---: | ---: | ---: | ---: |
-| targeted no-op, first repository | 0.436 s | 0.309 s | 0/5 | 5/5 |
-| targeted no-op, middle repository | 0.469 s | 0.256 s | 0/5 | 5/5 |
-| broad no-op, TTL expired | 9.455 s (80 ops) | 0.898 s (40 ops, parallel) | 0/5 | 5/5 |
-| broad no-op, within TTL | 5.743 s (40 ops) | 0.328 s (2 ops) | 0/5 | 5/5 |
-| targeted new tag, middle repository | 0.482 s (2 ops) | 0.325 s (1 op) | 0/5 | 5/5 |
-| first invocation (empty cache) | 14.021 s (80 ops) | 2.192 s (40 ops) | 5/5 | 5/5 |
-| first invocation, new clone of the project | 14.021 s | 1.253 s | 5/5 | 5/5 |
+| targeted no-op, first repository | 0.436 s | 0.331 s | 0/5 | 5/5 |
+| targeted no-op, middle repository | 0.469 s | 0.286 s | 0/5 | 5/5 |
+| broad no-op, TTL expired | 9.455 s (80 ops) | 0.957 s (40 ops, parallel) | 0/5 | 5/5 |
+| broad no-op, within TTL | 5.743 s (40 ops) | 0.384 s (2 ops) | 0/5 | 5/5 |
+| targeted new tag, middle repository | 0.482 s (2 ops) | 0.385 s (1 op) | 0/5 | 5/5 |
+| first invocation (empty cache) | 14.021 s (80 ops) | 2.906 s (80 ops, parallel) | 5/5 | 5/5 |
+| first invocation, new clone of the project | 14.021 s | 1.336 s | 5/5 | 5/5 |
 
 v0.1 locks differed from Composer's only cosmetically (dropped package `time`, `{}` rewritten as `[]`), but that produced diff noise on every update.
 
