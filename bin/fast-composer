@@ -1,9 +1,14 @@
 #!/usr/bin/env php
 <?php
-$autoload = $GLOBALS['_composer_autoload_path'] ?? (__DIR__ . '/../vendor/autoload.php');
-if (!is_string($autoload) || !is_file($autoload)) {
-    fwrite(STDERR, "fast-composer: Composer autoloader not found\n");
-    exit(1);
-}
-require $autoload;
+// Fast Composer has no runtime dependencies. Load only its own classes instead of the
+// surrounding (possibly global) vendor autoloader, so that running the Composer solver
+// in-process cannot pick up foreign copies of Composer's own dependencies.
+spl_autoload_register(static function (string $class): void {
+    if (str_starts_with($class, 'FastComposer\\')) {
+        $file = __DIR__.'/../src/'.str_replace('\\', '/', substr($class, strlen('FastComposer\\'))).'.php';
+        if (is_file($file)) {
+            require $file;
+        }
+    }
+});
 exit((new FastComposer\Application())->run(array_slice($argv, 1)));

@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Performance
+
+- VCS refresh uses a persistent shallow mirror per repository (in the Fast Composer cache): one `git fetch` both lists refs and downloads new tips, replacing the `ls-remote` + throw-away clone pair. The first fetch is `--depth=1`; later fetches are incremental.
+- `composer.json` of all new refs is read with a single `git cat-file --batch` instead of one `git show` per ref.
+- Broad refreshes, priming, explicit `dev-*` revalidation, changed-package validation and `verify` run their network Git operations concurrently (`FAST_COMPOSER_JOBS`, default 8).
+- A broad refresh no longer fetches explicit `dev-*` branches a second time.
+- The Composer solver runs in-process when `composer` is a regular phar (falls back to a subprocess otherwise, with Xdebug loaded, or with `FAST_COMPOSER_IN_PROCESS=0`). `bin/fast-composer` now uses its own autoloader so foreign global packages cannot leak into that process.
+- The inner Composer run skips root-version guessing (`COMPOSER_ROOT_VERSION`) when nothing can reference the root package, and skips `stty` probing when output is not a terminal.
+- Removed a `composer config` subprocess per uncached GitHub ref.
+
+### Fixed
+
+- Lock files written by Fast Composer are now byte-identical to Composer's: package `time` is preserved (commit author date, like Composer's GitDriver) and `content-hash` is patched in place instead of re-encoding the lock (which turned `{}` into `[]`).
+- Branches/tags without a `composer.json` (e.g. `gh-pages`) are skipped like Composer does instead of failing the refresh.
+
+### Benchmarks
+
+- New `benchmarks/compare.sh` harness: repositories served over `git daemon` (Composer's real remote path), target package at the first/middle/last repository position, new tag, moved dev branch, broad update inside/outside the TTL and first invocation; reports Git network operation counts and whether the lock is byte-identical to Composer's. `run.sh`, `private-vcs-like.sh` and `remote-latency.sh` are presets of it.
+
+### Upgrade note
+
+- Snapshot format bumped to 4: the first invocation after upgrading re-primes once.
+
 ## 0.1.0 - 2026-09-16
 
 Initial usable release candidate.
