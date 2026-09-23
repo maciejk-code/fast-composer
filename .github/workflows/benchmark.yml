@@ -1,0 +1,25 @@
+name: Benchmark
+on:
+  pull_request:
+    paths:
+      - 'benchmarks/**'
+      - '.github/workflows/benchmark.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  vcs-benchmark:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          tools: composer:2.10.3
+      - run: composer install --no-interaction --prefer-dist
+      - name: Zero-latency control
+        run: bash benchmarks/run.sh
+      - name: Remote-like VCS latency
+        run: bash benchmarks/remote-latency.sh
+      - name: Private-VCS-like workload
+        run: bash benchmarks/private-vcs-like.sh

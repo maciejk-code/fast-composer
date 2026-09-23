@@ -76,6 +76,45 @@ composer install
 
 If no compatible snapshot exists yet, Fast Composer falls back to a normal Composer solve with `--no-install`, then builds its snapshot. That first run can therefore be as slow as ordinary Composer. Subsequent targeted operations use the snapshot.
 
+Initial priming is lazy: metadata already selected by regular Composer is reused from `composer.lock`, while Fast Composer indexes branch/tag refs without fetching `composer.json` for every ref. Metadata for a new or moved ref is fetched only when it is actually needed.
+
+## Benchmarks (v0.1)
+
+The benchmark harness is committed with the project. Results below are medians of 3 runs on a GitHub Actions `ubuntu-24.04` runner using PHP 8.4.25, Composer 2.10.3 and Git 2.55.0. The synthetic project contains 24 root-declared VCS repositories and 8 additional unused branches per repository. All measured update paths use `--no-install --no-plugins --no-scripts --no-audit`.
+
+### Zero-latency local VCS control
+
+This fixture uses local filesystem Git repositories, so VCS/network latency is effectively absent.
+
+| Scenario | Composer | Fast Composer | Composer / Fast |
+| --- | ---: | ---: | ---: |
+| First Fast Composer invocation / cold snapshot | — | 0.77 s | — |
+| Warm targeted no-op update | 0.63 s | 0.68 s | 0.92x |
+| Targeted discovery of a new tag | 0.63 s | 0.72 s | 0.87x |
+
+### Remote-like VCS latency control
+
+The same shape is served through a local `git daemon`, with Linux `netem` injecting 15 ms of loopback delay. This is a controlled latency simulation, not a claim that it reproduces GitHub/SSH/private-network behavior exactly.
+
+| Scenario | Composer | Fast Composer | Composer / Fast |
+| --- | ---: | ---: | ---: |
+| First Fast Composer invocation / cold snapshot | — | 6.62 s | — |
+| Warm targeted no-op update | 1.18 s | 1.29 s | 0.91x |
+| Targeted discovery of a new tag | 1.27 s | 1.97 s | 0.65x |
+
+**Current result:** these v0.1 targeted-update fixtures do **not** demonstrate a speedup over standard Composer yet. The cost of targeted VCS refresh plus mandatory exact-SHA source verification is larger than the work avoided in these particular workloads. That result is intentionally documented rather than hidden behind a favorable fixture.
+
+Fast Composer is intended for projects where standard Composer repeatedly spends substantial time discovering metadata across many expensive VCS repositories. A general performance claim should therefore wait for reproducible measurements on that real workload (for example many private SSH VCS repositories), not be inferred from the synthetic tables above.
+
+Reproduce the measurements with:
+
+```bash
+bash benchmarks/run.sh
+bash benchmarks/remote-latency.sh
+```
+
+The remote-latency benchmark requires Linux `tc`/`netem` and permission to change the loopback qdisc. It runs an isolated local Git daemon and disables Composer `secure-http` only inside the benchmark's temporary `COMPOSER_HOME` so that the local `git://` fixture can be used.
+
 ## What gets refreshed
 
 ### Targeted update
@@ -139,7 +178,7 @@ Because of that, Fast Composer performs a mandatory targeted source check before
 
 This covers the class of metadata-corruption bugs that `composer install` alone does not catch while keeping the verification targeted.
 
-`fast-composer verify` re-checks managed VCS entries already in an existing lock and reports `OK`, `MISSING`, or `METADATA-MISMATCH`.
+`fast-composer verify` re-checks managed VCS entries already present in an existing lock and reports `OK`, `MISSING`, or `METADATA-MISMATCH`.
 
 ## Metadata verified against the locked SHA
 
