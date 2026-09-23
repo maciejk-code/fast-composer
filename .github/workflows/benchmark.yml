@@ -21,3 +21,5 @@ jobs:
         run: bash benchmarks/run.sh
       - name: Remote-like VCS latency
         run: bash benchmarks/remote-latency.sh
+      - name: Private-VCS-like workload
+        run: bash benchmarks/private-vcs-like.sh
