@@ -15,10 +15,10 @@ fc_git($repo, 'commit', '-q', '-m', 'docs');
 fc_git($repo, 'checkout', '-q', '-f', 'main');
 
 // A new process (Snapshot instance) must fetch again.
-$refreshed = (new Snapshot($root))->refreshPackages($state, ['acme/a']);
+$refreshed = (new Snapshot($root))->refreshPackages($state, ['acme/a'], $config);
 fc_assert(isset($state['repos'][$repo]['refs']['heads']['docs']), 'refresh did not fetch the new docs branch');
 
-$versions = $state['packages']['acme/a'] ?? [];
+$versions = Snapshot::versions($state)['acme/a'] ?? [];
 fc_assert(
     $refreshed === 1 && isset($versions['1.0.0'], $versions['dev-main'], $versions['dev-unused-a'], $versions['dev-unused-b']),
     'mirror hydration missed versions: '.implode(', ', array_keys($versions))

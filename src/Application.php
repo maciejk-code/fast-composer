@@ -79,7 +79,7 @@ final class Application
                 printf(
                     "snapshot repos=%d versions=%d\n",
                     count($state['repos'] ?? []),
-                    array_sum(array_map('count', $state['packages'] ?? []))
+                    array_sum(array_map('count', Snapshot::versions($state)))
                 );
                 return 0;
             }
@@ -103,6 +103,12 @@ final class Application
             }
 
             $solveArgs = CommandLine::lockOnly($args);
+            if (!ComposerPackages::available()) {
+                // Package data comes from Composer's own VcsRepository; without Composer's
+                // classes (non-phar installation) stay correct and run plain Composer.
+                $this->log('WARNING: Composer classes are not loadable from the `composer` on PATH (needs the Composer phar); running regular Composer instead');
+                return $this->delegateComposer($solveArgs, $root);
+            }
             $state = $snapshot->load();
             if (!$state || !$snapshot->isCompatible($state, $rootCfg)) {
                 // No regular Composer solve needed: fetch the repositories the snapshot does not
@@ -119,14 +125,14 @@ final class Application
                     "snapshot ready (synchronized=%d, repos=%d, versions=%d)",
                     $synced,
                     count($state['repos'] ?? []),
-                    array_sum(array_map('count', $state['packages'] ?? []))
+                    array_sum(array_map('count', Snapshot::versions($state)))
                 ));
             }
 
             $ttl = $this->ttl();
             if ($cmd === 'require') {
                 $this->log("refreshing requested VCS repositories");
-                $this->refreshForRequire($snapshot, $state, $args);
+                $this->refreshForRequire($snapshot, $state, $args, $rootCfg);
             } else {
                 $targets = CommandLine::packageArguments(array_slice($args, 1));
                 if ($targets === []) {
@@ -178,7 +184,7 @@ final class Application
 
         $this->log("solving dependency graph with Composer from the cached snapshot (lock only; Composer's own output follows; its security audit queries packagist.org unless --no-audit)");
         $solveStart = microtime(true);
-        $code = ComposerSolver::run($args, $root, $fastComposer, $rootCfg, $snapshot->dir().'/packages.json');
+        $code = ComposerSolver::run($args, $root, $fastComposer, $rootCfg, $snapshot->repositoryFiles());
         if ($code !== 0) {
             return $code;
         }
@@ -213,7 +219,6 @@ final class Application
         }
 
         $this->publishAtomically($root, $newComposer, $newLock);
-        $snapshot->mergeLockIntoSnapshot($state, $rootCfg, $snapshot->readLock());
 
         $this->warnAboutUnapprovedPlugins($rootCfg, $snapshot->readLock());
         $this->log("lock verified and published; done");
@@ -268,7 +273,7 @@ final class Application
         }
     }
 
-    private function refreshForRequire(Snapshot $snapshot, array &$state, array $args): void
+    private function refreshForRequire(Snapshot $snapshot, array &$state, array $args, array $rootCfg): void
     {
         $branches = [];
         $names = [];
@@ -286,9 +291,9 @@ final class Application
         }
 
         // All requested repositories are fetched in one parallel batch.
-        $snapshot->ensureBranches($state, $branches);
+        $snapshot->ensureBranches($state, $branches, $rootCfg);
         if ($names !== []) {
-            $snapshot->refreshPackages($state, $names);
+            $snapshot->refreshPackages($state, $names, $rootCfg);
         }
     }
 
@@ -313,10 +318,10 @@ final class Application
         }
 
         // All targeted repositories are fetched in one parallel batch.
-        $snapshot->ensureBranches($state, $branches);
+        $snapshot->ensureBranches($state, $branches, $rootCfg);
         $count = count($branches);
         if ($patterns !== []) {
-            $count += $snapshot->refreshPackages($state, $patterns);
+            $count += $snapshot->refreshPackages($state, $patterns, $rootCfg);
         }
         return $count;
     }
@@ -347,7 +352,7 @@ final class Application
                 $requests[] = [$name, $branch];
             }
         }
-        $snapshot->ensureBranches($state, $requests);
+        $snapshot->ensureBranches($state, $requests, $rootCfg);
         return count($requests);
     }
 
@@ -383,7 +388,7 @@ final class Application
 
         $ttl = $this->ttl();
         $repos = count($state['repos'] ?? []);
-        $versions = array_sum(array_map('count', $state['packages'] ?? []));
+        $versions = array_sum(array_map('count', Snapshot::versions($state)));
         printf("version: %s\n", self::VERSION);
         printf("snapshot-format: %d\n", $state['format'] ?? 0);
         printf("repositories: %d\n", $repos);

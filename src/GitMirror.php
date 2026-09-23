@@ -12,7 +12,7 @@ namespace FastComposer;
 final class GitMirror
 {
     private const SYNC_MARKER = 'fast-composer-synced';
-    private const HEAD_REF = 'refs/fast-composer/HEAD';
+    private const DEFAULT_BRANCH_FILE = 'fast-composer-default-branch';
 
     /** @var array<string,?array> composer.json per URL+SHA read during this process (null: none). */
     private array $metadata = [];
@@ -20,8 +20,6 @@ final class GitMirror
     private array $reachable = [];
     /** @var array<string,true> Repositories whose tips were fetched during this process. */
     private array $synced = [];
-    /** @var array<string,string> Package name per repository, resolved during this process. */
-    private array $defaultNames = [];
     /** @var null|callable(string):void */
     private $logger = null;
 
@@ -49,7 +47,7 @@ final class GitMirror
      * @param list<string> $urls
      * @return array<string,string> error message per failed URL
      */
-    public function sync(array $urls): array
+    public function sync(array $urls, bool $refreshDefaultBranch = false): array
     {
         $commands = [];
         foreach (array_values(array_unique($urls)) as $url) {
@@ -57,6 +55,11 @@ final class GitMirror
                 continue;
             }
             $dir = $this->ensureMirror($url);
+            if ($refreshDefaultBranch || !is_file($dir.'/'.self::DEFAULT_BRANCH_FILE)) {
+                // Composer's root identifier is the remote HEAD branch; ask for it in the same
+                // parallel batch (it rarely changes, so it is remembered per mirror).
+                $commands[$url.'#HEAD'] = [['git', 'ls-remote', '--symref', '--', $url, 'HEAD'], $this->cwd];
+            }
             // The first fetch only takes the tips (--depth=1). Later fetches are incremental
             // against those tips; a repeated --depth would force an extra pack round even when
             // nothing changed.
@@ -68,10 +71,17 @@ final class GitMirror
             ));
         }
 
-        $results = $this->runLocked($commands, array_keys($commands), 'fetching VCS repositories', static fn ($url): string => (string) $url);
+        $urlsToLock = array_values(array_filter(array_keys($commands), static fn ($key): bool => !str_ends_with((string) $key, '#HEAD')));
+        $results = $this->runLocked($commands, $urlsToLock, 'fetching VCS repositories', static fn ($key): string => str_ends_with((string) $key, '#HEAD') ? substr((string) $key, 0, -5).' (default branch)' : (string) $key);
 
         $errors = [];
         foreach ($results as $url => [$code, $out, $err]) {
+            if (str_ends_with((string) $url, '#HEAD')) {
+                if ($code === 0 && preg_match('{^ref: refs/heads/(\S+)\s+HEAD$}m', $out, $m)) {
+                    @file_put_contents($this->mirrorDir(substr((string) $url, 0, -5)).'/'.self::DEFAULT_BRANCH_FILE, $m[1]);
+                }
+                continue;
+            }
             if ($code !== 0) {
                 $errors[$url] = $this->gitError($err !== '' ? $err : $out, "Cannot read refs from $url");
                 continue;
@@ -214,53 +224,79 @@ final class GitMirror
     }
 
     /**
-     * Package name Composer assigns to each repository: the composer.json name on the remote
-     * default branch (HEAD). Fetched in parallel.
+     * The repository's default branch (Composer's "root identifier"): the remote HEAD branch
+     * learned during sync(), falling back like Composer when the remote does not advertise one.
+     */
+    public function defaultBranch(string $url): string
+    {
+        $heads = $this->refs($url)['heads'];
+        $remembered = @file_get_contents($this->mirrorDir($url).'/'.self::DEFAULT_BRANCH_FILE);
+        if (is_string($remembered) && isset($heads[trim($remembered)])) {
+            return trim($remembered);
+        }
+        foreach (['master', 'main'] as $candidate) {
+            if (isset($heads[$candidate])) {
+                return $candidate;
+            }
+        }
+        return 'master';
+    }
+
+    /**
+     * Package name Composer assigns to each repository: the composer.json name on its default
+     * branch.
      *
      * @param list<string> $urls
      * @return array<string,string> per URL
      */
     public function defaultBranchNames(array $urls): array
     {
-        $pending = array_values(array_filter($urls, fn (string $url): bool => !isset($this->defaultNames[GitUrl::normalize($url)])));
-        if ($pending !== []) {
-            $errors = $this->sync($pending);
-            $commands = [];
-            foreach ($pending as $url) {
-                if (isset($errors[$url])) {
-                    throw new \RuntimeException($errors[$url]);
-                }
-                $commands[$url] = $this->git($this->mirrorDir($url), [
-                    'fetch', '-q', '--depth=1', '--no-tags', '--no-write-fetch-head', '--', $url, '+HEAD:'.self::HEAD_REF,
-                ]);
-            }
-            $results = $this->runLocked($commands, $pending, 'reading package names from remote HEAD', static fn ($url): string => (string) $url);
-
-            foreach ($pending as $url) {
-                $candidates = [self::HEAD_REF.':composer.json'];
-                if (($results[$url][0] ?? 1) !== 0) {
-                    // Dangling remote HEAD: fall back to the conventional default branches.
-                    $candidates = ['refs/heads/main:composer.json', 'refs/heads/master:composer.json'];
-                }
-                $name = null;
-                foreach ($this->catFile($this->mirrorDir($url), $candidates) as $object) {
-                    $name = $this->decodeComposerJson($object)['name'] ?? null;
-                    if (is_string($name) && $name !== '') {
-                        break;
-                    }
-                }
-                if (!is_string($name) || $name === '') {
-                    throw new \RuntimeException("composer.json at $url HEAD has no package name");
-                }
-                $this->defaultNames[GitUrl::normalize($url)] = $name;
-            }
-        }
-
+        // Mirrors that were never synchronized (e.g. only exact SHAs fetched) have no refs yet.
+        $errors = $this->sync(array_values(array_filter($urls, fn (string $url): bool => !is_file($this->mirrorDir($url).'/'.self::SYNC_MARKER))));
         $names = [];
         foreach ($urls as $url) {
-            $names[$url] = $this->defaultNames[GitUrl::normalize($url)];
+            if (isset($errors[$url])) {
+                throw new \RuntimeException($errors[$url]);
+            }
+            $sha = $this->refs($url)['heads'][$this->defaultBranch($url)] ?? null;
+            $name = $sha === null ? null : ($this->metadata($url, [$sha])[$sha]['name'] ?? null);
+            if (!is_string($name) || $name === '') {
+                throw new \RuntimeException("composer.json at $url HEAD has no package name");
+            }
+            $names[$url] = $name;
         }
         return $names;
+    }
+
+    /**
+     * Raw composer.json text and commit author date of commits in the mirror, for Composer's
+     * own VcsRepository (via MirrorDriver).
+     *
+     * @param list<string> $shas
+     * @return array<string,array{composer:?string,date:?int}>
+     */
+    public function files(string $url, array $shas): array
+    {
+        $shas = array_values(array_unique($shas));
+        if ($shas === []) {
+            return [];
+        }
+        $specs = [];
+        foreach ($shas as $sha) {
+            $specs[] = $sha.':composer.json';
+            $specs[] = $sha.'^{commit}';
+        }
+        $objects = $this->catFile($this->mirrorDir($url), $specs);
+        $result = [];
+        foreach ($shas as $i => $sha) {
+            $file = $objects[2 * $i] ?? null;
+            $commit = $objects[2 * $i + 1] ?? null;
+            $result[$sha] = [
+                'composer' => $file !== null && $file['type'] === 'blob' ? $file['content'] : null,
+                'date' => $commit !== null && preg_match('/^author .* (\d+) [+-]\d{4}$/m', $commit['content'], $m) ? (int) $m[1] : null,
+            ];
+        }
+        return $result;
     }
 
     /** composer.json at an exact SHA obtained from the remote during this invocation. */
