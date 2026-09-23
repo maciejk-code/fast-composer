@@ -276,6 +276,20 @@ The repository maintains tests for:
 - lock-only accelerated updates (no `vendor/` materialization),
 - installation as a global Composer binary.
 
+## Code layout
+
+| Class | Responsibility |
+| --- | --- |
+| `Application` | CLI commands and the order of steps (sync → refresh → solve → validate → publish) |
+| `Snapshot` | Per-project snapshot state: sync, TTL/targeted refresh, dev branches, the temporary Composer repository |
+| `GitMirror` | All network Git access: shared shallow mirrors, parallel fetches with progress, locks, `cat-file` reads, reachability proven during this run |
+| `LockValidator` | Safety contract: changed/locked VCS packages must match `composer.json` at their exact SHA |
+| `ComposerSolver`, `InProcessComposer` | Running the real Composer solver (in-process when possible) |
+| `RootConfig`, `LockFile`, `CommandLine` | Reading the root config, the lock file and command-line arguments |
+| `JsonFile`, `ComposerJson`, `GitUrl`, `Process` | Low-level helpers |
+
+Unit tests live in `tests/unit/` (one file per area, each run with a fresh temporary cache by `tests/run.php`); `tests/*.sh` are end-to-end contracts against real Composer.
+
 ## Scope of v0.1
 
 Fast Composer intentionally optimizes the common local developer path. It is not a replacement for Composer, Satis or Private Packagist, and it does not promise that its lock output will be byte-for-byte identical to an unconstrained `composer update`.
