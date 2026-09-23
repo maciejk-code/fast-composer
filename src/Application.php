@@ -145,7 +145,7 @@ final class Application
                         printf("[fast-composer] refreshed %d VCS repositories (TTL %ds)\n", $count, $ttl);
                     }
                 } else {
-                    $count = $snapshot->refreshPackages($state, $targets);
+                    $count = $this->refreshTargetedUpdates($snapshot, $state, $rootCfg, $targets);
                     if ($count > 0) {
                         printf("[fast-composer] refreshed %d targeted VCS repositories\n", $count);
                     }
@@ -250,6 +250,41 @@ final class Application
                 $snapshot->refreshPackages($state, [$name]);
             }
         }
+    }
+
+    /** @param list<string> $targets */
+    private function refreshTargetedUpdates(Snapshot $snapshot, array &$state, array $rootCfg, array $targets): int
+    {
+        $count = 0;
+        foreach ($targets as $spec) {
+            [$name, $temporaryConstraint] = array_pad(explode(':', $spec, 2), 2, null);
+            if ($this->isManagedPackage($state, $name)) {
+                $constraint = is_string($temporaryConstraint) && $temporaryConstraint !== ''
+                    ? $temporaryConstraint
+                    : $this->rootConstraintForPackage($rootCfg, $name);
+                $branch = is_string($constraint) ? $this->explicitDevBranch($constraint) : null;
+                if ($branch !== null) {
+                    $snapshot->ensureBranch($state, $name, $branch);
+                    $count++;
+                    continue;
+                }
+            }
+
+            // Preserve wildcard and non-dev targeted update behavior.
+            $count += $snapshot->refreshPackages($state, [$spec]);
+        }
+        return $count;
+    }
+
+    private function rootConstraintForPackage(array $rootCfg, string $package): ?string
+    {
+        foreach (['require', 'require-dev'] as $section) {
+            $constraint = $rootCfg[$section][$package] ?? null;
+            if (is_string($constraint)) {
+                return $constraint;
+            }
+        }
+        return null;
     }
 
     private function refreshExplicitDevRequirements(Snapshot $snapshot, array &$state, array $rootCfg): int
