@@ -29,6 +29,12 @@ final class ComposerPackages
         $this->httpDownloader = new HttpDownloader($this->io, $this->config);
     }
 
+    /** Version of the Composer whose logic produced the package data. */
+    public static function composerVersion(): ?string
+    {
+        return self::available() ? \Composer\Composer::getVersion() : null;
+    }
+
     public static function available(): bool
     {
         return InProcessComposer::loadClasses() && class_exists(VcsRepository::class);
