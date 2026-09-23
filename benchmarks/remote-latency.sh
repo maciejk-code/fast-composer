@@ -22,6 +22,7 @@ PORT="${BENCH_GIT_PORT:-19418}"
 export COMPOSER_HOME="$WORK/composer-home"
 export FAST_COMPOSER_CACHE_DIR="$WORK/fast-composer-cache"
 mkdir -p "$COMPOSER_HOME" "$FAST_COMPOSER_CACHE_DIR" "$WORK/repos" "$WORK/export"
+composer config --global secure-http false >/dev/null
 
 git config --global user.email fast-composer-bench@example.invalid
 git config --global user.name fast-composer-bench
@@ -84,7 +85,6 @@ mkdir -p "$WORK/baseline" "$WORK/cache-baseline"
 cp composer.json composer.lock "$WORK/baseline/"
 cp -a "$COMPOSER_HOME/." "$WORK/cache-baseline/"
 
-# Cold Fast Composer snapshot with an already warm Composer cache.
 cold=()
 for i in $(seq 1 "$RUNS"); do
   reset_root; restore_dir "$WORK/cache-baseline" "$COMPOSER_HOME"; rm -rf "$FAST_COMPOSER_CACHE_DIR"; mkdir -p "$FAST_COMPOSER_CACHE_DIR"
@@ -92,7 +92,6 @@ for i in $(seq 1 "$RUNS"); do
 done
 printf 'REMOTE_BENCH|fast-composer cold prime|%s|%s\n' "$(median "${cold[@]}")" "$(IFS=,; echo "${cold[*]}")"
 
-# Prime snapshot for steady-state comparison.
 reset_root; restore_dir "$WORK/cache-baseline" "$COMPOSER_HOME"; rm -rf "$FAST_COMPOSER_CACHE_DIR"; mkdir -p "$FAST_COMPOSER_CACHE_DIR"
 "${FC[@]}" update "$TARGET" "${FLAGS[@]}" >/dev/null
 
