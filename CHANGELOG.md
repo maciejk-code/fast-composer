@@ -48,6 +48,7 @@
 
 - Split the 1300-line `Snapshot` into `Snapshot` (state), `GitMirror` (all network Git access), `LockValidator` (safety contract) and small helpers (`RootConfig`, `LockFile`, `JsonFile`, `GitUrl`); moved solver invocation and argument parsing out of `Application` (`ComposerSolver`, `CommandLine`). No behavior change.
 - Unit tests split into `tests/unit/*.php`, each run in isolation by `tests/run.php`.
+- New end-to-end contracts: `tests/parity-contract.sh` (results byte-identical to plain Composer for every Composer behaviour Fast Composer once got wrong) and `tests/auth-contract.sh` (auth.json, fallback to Git credentials, clear failure). PHPStan level 5 (`phpstan.neon.dist`). `composer check` runs static analysis, unit tests and all contracts.
 
 ### Benchmarks
 

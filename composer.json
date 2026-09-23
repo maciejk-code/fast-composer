@@ -5,6 +5,26 @@
   "license": "MIT",
   "require": {"php": ">=8.2"},
   "autoload": {"psr-4": {"FastComposer\\": "src/"}},
+  "require-dev": {"phpstan/phpstan": "^2.1"},
   "bin": ["bin/fast-composer"],
-  "scripts": {"test": "php tests/run.php"}
+  "scripts": {
+    "test": "php tests/run.php",
+    "test:contracts": [
+      "Composer\\Config::disableProcessTimeout",
+      "bash tests/safety-contract.sh",
+      "bash tests/ci-verifier-contract.sh",
+      "bash tests/runtime-contract.sh",
+      "bash tests/parity-contract.sh",
+      "bash tests/auth-contract.sh",
+      "bash tests/global-install-smoke.sh"
+    ],
+    "analyse": "phpstan analyse --no-progress",
+    "check": ["@analyse", "@test", "@test:contracts"]
+  },
+  "scripts-descriptions": {
+    "test": "Unit tests (tests/unit, each file isolated)",
+    "test:contracts": "End-to-end contracts against real Composer: safety, parity, auth, runtime, global install",
+    "analyse": "PHPStan (needs the composer phar on PATH to see Composer classes)",
+    "check": "Everything: static analysis, unit tests and all contracts"
+  }
 }

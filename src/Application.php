@@ -83,7 +83,7 @@ final class Application
             if ($cmd === 'refresh') {
                 $this->log("rebuilding full VCS snapshot");
                 $this->log("this is the exhaustive path: it may read metadata for many refs; time depends on repository/ref count, Git/SSH latency and cache warmth");
-                $state = $snapshot->buildFromLockAndCache($rootCfg);
+                $state = $snapshot->rebuild($rootCfg);
                 printf(
                     "snapshot repos=%d versions=%d\n",
                     count($state['repos'] ?? []),
