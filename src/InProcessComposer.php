@@ -93,6 +93,43 @@ final class InProcessComposer
             return null;
         }
 
+        return self::locatePhar();
+    }
+
+    /**
+     * Make Composer's own classes (e.g. JsonManipulator) available in this process, when the
+     * `composer` on PATH is a phar. Loading classes is safe even where running the whole
+     * Composer application in-process is not.
+     */
+    public static function loadClasses(): bool
+    {
+        if (class_exists(\Composer\Json\JsonManipulator::class, false)) {
+            return true;
+        }
+        if (!extension_loaded('phar') || self::locatePhar() === null) {
+            return false;
+        }
+        try {
+            require_once 'phar://composer.phar/src/bootstrap.php';
+        } catch (\Throwable) {
+            return false;
+        }
+        return class_exists(\Composer\Json\JsonManipulator::class);
+    }
+
+    /** @var null|false|string false: not searched yet */
+    private static $located = false;
+
+    private static function locatePhar(): ?string
+    {
+        if (self::$located !== false) {
+            return self::$located;
+        }
+        return self::$located = self::searchPath();
+    }
+
+    private static function searchPath(): ?string
+    {
         foreach (explode(PATH_SEPARATOR, (string) getenv('PATH')) as $dir) {
             if ($dir === '') {
                 continue;

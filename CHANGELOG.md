@@ -24,13 +24,23 @@
 
 ### Fixed
 
+- Locks for packages on their repository's default branch lacked `"default-branch": true` (now produced by Composer itself).
+- Repository `exclude` / `only` / `canonical` options were ignored, so Fast Composer could lock a package Composer would refuse.
+
 - Lock files written by Fast Composer are now byte-identical to Composer's: package `time` is preserved (commit author date, like Composer's GitDriver) and `content-hash` is patched in place instead of re-encoding the lock (which turned `{}` into `[]`).
 - `fast-composer require` failed with a schema error on a composer.json containing an empty object such as `"require": {}` (it was re-encoded as `[]`); empty objects are now preserved.
 - `require`/`update` with several packages refresh their repositories in one parallel batch (was one after another); `vendor/name=constraint` is recognized like `vendor/name:constraint`.
 - `require` keeps `config.allow-plugins` decisions Composer wrote to its working copy.
+- `fast-composer require` rewrote the whole composer.json (4-space indentation, inline arrays expanded). It now edits only the changed links the way Composer's `require` does (Composer's `JsonManipulator`), so tabs/indentation, key order and inline arrays are kept; the result is byte-identical to `composer require`. Without Composer's classes available, the fallback keeps the file's indentation.
 - Tags Composer cannot parse (e.g. `0.3-no-vendor`) are skipped like Composer does. Before, they reached the snapshot and Composer failed with `Invalid version string` for the whole snapshot repository. Version names now follow Composer's VcsRepository exactly (ported `VersionParser` rules): `v1.2.0` stays `v1.2.0` in the lock, `release-` prefixes are dropped, tags with `-dev` are skipped, the first of two tags resolving to the same version wins, a `version` in a tag's composer.json is honored, and branches such as `v2.x` / `4.*` / `feat#1` get Composer's names. A version Composer cannot parse is never written to the snapshot repository.
 - "Repository package name mismatch": a tag/branch whose `composer.json` has a different `name` (renamed package, fork, typo, different case) aborted the refresh. Like Composer, every version of a VCS repository now takes the name from its default branch. Lock validation accepts such a version only under exactly that name.
 - Branches/tags without a `composer.json` (e.g. `gh-pages`) are skipped like Composer does instead of failing the refresh.
+
+### Architecture
+
+- VCS package data is now produced by Composer's own `VcsRepository` running on a Fast Composer VCS driver (`MirrorDriver`) that reads the local mirror, instead of a re-implementation of Composer's rules. Everything about turning refs into packages is Composer's: version names and skipped tags, package name, `default-branch` (and its `9999999-dev` alias), branch aliases, release time. The ported version rules (`ComposerVersion`) are gone.
+- Each VCS repository becomes its own local `composer` repository in the same position with its `only` / `exclude` / `canonical` options, so repository priority and filters behave as in Composer.
+- The default branch is the remote HEAD (`git ls-remote --symref`, fetched in the same parallel batch and remembered per mirror; refreshed by `fast-composer refresh`). Composer asks the remote for it on every run.
 
 ### Internal
 
@@ -43,7 +53,7 @@
 
 ### Upgrade note
 
-- Snapshot format bumped to 5 (version naming now matches Composer) and the cache location changed: the first invocation after upgrading synchronizes once. The old `<composer cache-dir>/fast-composer` directory can be deleted.
+- Snapshot format bumped to 6 (package data now comes from Composer's VcsRepository) and the cache location changed: the first invocation after upgrading synchronizes once. The old `<composer cache-dir>/fast-composer` directory can be deleted.
 
 ## 0.1.0 - 2026-09-16
 
