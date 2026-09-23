@@ -20,4 +20,6 @@ jobs:
       - name: Zero-latency control
         run: bash benchmarks/run.sh
       - name: Remote-like VCS latency
-        run: bash benchmarks/remote-latency.sh
+        run: |
+          composer config --global secure-http false
+          bash benchmarks/remote-latency.sh
