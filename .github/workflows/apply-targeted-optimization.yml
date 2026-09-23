@@ -1,0 +1,44 @@
+name: Apply targeted refresh optimization
+
+on:
+  push:
+    branches: [optimize-targeted-refresh]
+    paths:
+      - '.github/workflows/apply-targeted-optimization.yml'
+      - '.github/apply-targeted-optimization.py'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: optimize-targeted-refresh
+          fetch-depth: 0
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          tools: composer:2.10.3
+      - name: Apply patch
+        run: python3 .github/apply-targeted-optimization.py
+      - name: Syntax check
+        run: |
+          php -l src/Application.php
+          php -l src/Snapshot.php
+      - name: Run tests
+        run: |
+          composer install --no-interaction --prefer-dist
+          composer test
+          bash tests/runtime-contract.sh
+      - name: Remove one-shot patch machinery
+        run: rm .github/apply-targeted-optimization.py .github/workflows/apply-targeted-optimization.yml
+      - name: Commit optimized implementation
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Optimize targeted VCS refresh' || exit 0
+          git push origin HEAD:optimize-targeted-refresh
