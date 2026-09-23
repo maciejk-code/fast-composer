@@ -10,9 +10,14 @@ final class JsonFile
         if ($raw === false) {
             throw new \RuntimeException("Cannot read $path");
         }
-        $data = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+        return self::decode($raw, $path);
+    }
+
+    public static function decode(string $json, string $source = 'JSON'): array
+    {
+        $data = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
         if (!is_array($data)) {
-            throw new \RuntimeException("Invalid JSON: $path");
+            throw new \RuntimeException("Invalid JSON: $source");
         }
         return $data;
     }

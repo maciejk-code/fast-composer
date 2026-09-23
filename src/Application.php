@@ -192,20 +192,13 @@ final class Application
             throw new \RuntimeException('Composer did not produce a lock file');
         }
 
+        $newComposer = null;
         if (($args[0] ?? null) === 'require') {
+            // Composer edited the temporary copy; apply the same edits to the real file text.
             $temporaryRoot = JsonFile::read($fastComposer);
-            foreach (['require', 'require-dev'] as $key) {
-                if (isset($temporaryRoot[$key])) {
-                    $rootCfg[$key] = $temporaryRoot[$key];
-                } else {
-                    unset($rootCfg[$key]);
-                }
-            }
-            // Composer records "Do you trust this plugin?" answers in config.allow-plugins of
-            // the file it edits (the temporary one); keep them in the real composer.json.
-            if (array_key_exists('allow-plugins', $temporaryRoot['config'] ?? [])) {
-                $rootCfg['config']['allow-plugins'] = $temporaryRoot['config']['allow-plugins'];
-            }
+            $original = (string) file_get_contents($root.'/composer.json');
+            $newComposer = ComposerJson::applyRequireChanges($original, $rootCfg, $temporaryRoot, $this->sortPackages($args, $rootCfg));
+            $rootCfg = JsonFile::decode($newComposer);
         }
 
         $this->log(sprintf("Composer solve finished (%.1fs); validating changed VCS packages against their exact locked SHA", microtime(true) - $solveStart));
@@ -214,9 +207,6 @@ final class Application
         LockFile::fixContentHash($fastLock, $rootCfg);
         $this->log("validation complete; publishing composer files");
 
-        $newComposer = ($args[0] ?? null) === 'require'
-            ? ComposerJson::encode($rootCfg)
-            : null;
         $newLock = file_get_contents($fastLock);
         if ($newLock === false) {
             throw new \RuntimeException('Cannot read generated lock file');
@@ -234,6 +224,24 @@ final class Application
      * Lock-only updates never install, so Composer never asks "Do you trust this plugin?". A
      * later non-interactive `composer install` (CI) would then refuse the plugin: say so now.
      */
+    /** Whether Composer's require would sort packages: --sort-packages, or the setting in root/global config. */
+    private function sortPackages(array $args, array $rootCfg): bool
+    {
+        if (CommandLine::hasFlag($args, '--sort-packages') || ($rootCfg['config']['sort-packages'] ?? false) === true) {
+            return true;
+        }
+        $home = getenv('COMPOSER_HOME') ?: (getenv('HOME') ? getenv('HOME').'/.composer' : null);
+        foreach ($home ? [$home.'/config.json', (getenv('XDG_CONFIG_HOME') ?: getenv('HOME').'/.config').'/composer/config.json'] : [] as $path) {
+            try {
+                if (is_file($path) && (JsonFile::read($path)['config']['sort-packages'] ?? false) === true) {
+                    return true;
+                }
+            } catch (\Throwable) {
+            }
+        }
+        return false;
+    }
+
     private function warnAboutUnapprovedPlugins(array $rootCfg, array $lock): void
     {
         $allowed = $rootCfg['config']['allow-plugins'] ?? [];
