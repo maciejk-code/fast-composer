@@ -89,8 +89,8 @@ This fixture uses 24 local filesystem VCS repositories with 8 additional unused 
 | Scenario | Composer | Fast Composer | Composer / Fast |
 | --- | ---: | ---: | ---: |
 | First Fast Composer invocation / cold snapshot | — | 0.77 s | — |
-| Warm targeted no-op update | 0.64 s | 0.71 s | 0.90x |
-| Targeted discovery of a new tag | 0.64 s | 0.72 s | 0.90x |
+| Warm targeted no-op update | 0.64 s | 0.68 s | 0.94x |
+| Targeted discovery of a new tag | 0.63 s | 0.71 s | 0.89x |
 
 ### Remote-like VCS latency control
 
@@ -98,9 +98,9 @@ The same shape is served through a local `git daemon`, with Linux `netem` inject
 
 | Scenario | Composer | Fast Composer | Composer / Fast |
 | --- | ---: | ---: | ---: |
-| First Fast Composer invocation / cold snapshot | — | 6.65 s | — |
-| Warm targeted no-op update | 1.19 s | 1.20 s | 0.99x |
-| Targeted discovery of a new tag | 1.29 s | 1.45 s | 0.89x |
+| First Fast Composer invocation / cold snapshot | — | 6.63 s | — |
+| Warm targeted no-op update | 1.18 s | 1.21 s | 0.97x |
+| Targeted discovery of a new tag | 1.28 s | 1.45 s | 0.88x |
 
 ### Private-VCS-like workload
 
@@ -108,15 +108,15 @@ This fixture contains 40 VCS repositories, 20 root-required packages and 10 addi
 
 | Scenario | Composer | Fast Composer | Composer Git ops | Fast Git ops |
 | --- | ---: | ---: | ---: | ---: |
-| Targeted no-op update | 0.87 s | 0.94 s | 1 | 2 |
-| Broad no-op update | 5.29 s | **3.48 s** | 20 | 21 |
-| Moved explicit `dev-*` branch | 0.92 s | 0.93 s | 1 | 2 |
+| Targeted no-op update | 0.86 s | 0.87 s | 1 | 1 |
+| Broad no-op update | 5.28 s | **3.43 s** | 20 | 20 |
+| Moved explicit `dev-*` branch | 0.92 s | **0.86 s** | 1 | 1 |
 
 Both implementations selected the moved development branch correctly in all 3/3 runs.
 
-Before the targeted-refresh optimization, the same workload shape required 14 Git network operations for a Fast Composer targeted no-op and 15 for a moved development branch. The optimized path reduced those counts to 2 while keeping exact-SHA source validation. Timings from separate hosted runners should not be treated as laboratory-grade before/after measurements; the call-count reduction is the stronger deterministic signal.
+Before the targeted-refresh optimization, the same workload shape required 14 Git network operations for a Fast Composer targeted no-op and 15 for a moved development branch. The optimized exact-branch path reduces both to a single Git network operation while keeping exact-SHA source validation. Timings from separate hosted runners should not be treated as laboratory-grade before/after measurements; the call-count reduction is the stronger deterministic signal.
 
-**Current result:** targeted development-branch updates are now approximately at Composer parity in these synthetic latency controls, while the broad private-VCS-like update is about **1.52x faster** (5.29 s / 3.48 s). Stable new-tag discovery is still modestly slower than standard Composer in these fixtures. A general performance claim should still be validated on the real private-SSH/VCS workload that motivated the project.
+**Current result:** targeted no-op updates are effectively at Composer parity in this synthetic private-VCS workload, moved explicit `dev-*` updates are slightly faster, and the broad private-VCS-like update is about **1.54x faster** (5.28 s / 3.43 s). Stable new-tag discovery is still modestly slower than standard Composer in these fixtures. A general performance claim should still be validated on the real private-SSH/VCS workload that motivated the project.
 
 Reproduce the measurements with:
 
@@ -144,9 +144,9 @@ Always refreshes the matching managed VCS repository. It does not wait for the g
 fast-composer require company/package:dev-feature
 ```
 
-Looks up that exact branch. If the branch has moved to another commit, Fast Composer fetches metadata for the new SHA before solving.
+Fetches that exact branch shallowly in a single Git network operation, obtaining both its current SHA and `composer.json` metadata before solving. The fetched exact-SHA metadata is reused for the mandatory source validation during the same invocation.
 
-Explicit `dev-*` requirements already present in the root `composer.json` are also revalidated on a plain `fast-composer update`, regardless of TTL.
+Explicit `dev-*` requirements already present in the root `composer.json` are also revalidated on a plain or targeted `fast-composer update`, regardless of TTL.
 
 ### Broad update
 
@@ -240,6 +240,7 @@ The repository maintains tests for:
 - platform requirements (`PHP` / `ext-*` class of constraints),
 - targeted discovery of a newly created tag,
 - a mutable development branch moving to a new commit,
+- targeted refresh of an explicitly pinned mutable development branch,
 - external cache + no working-tree scratch files,
 - lock-only accelerated updates (no `vendor/` materialization),
 - installation as a global Composer binary.
