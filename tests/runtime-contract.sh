@@ -134,6 +134,33 @@ if(($p["autoload"]["psr-4"]["Acme\\Runtime\\"]??null)!=="src-v2/")throw new Runt
 assert_clean_root "$ROOT_DEV"
 echo "mutable-dev-branch: PASS"
 
+# Targeting that same explicit dev requirement must use the exact branch path,
+# not hydrate every unrelated branch/tag in the repository.
+cat > "$FIX/composer.json" <<'JSON'
+{
+  "name": "acme/runtime-fixture",
+  "type": "library",
+  "require": {"php": ">=8.2"},
+  "autoload": {"psr-4": {"Acme\\Runtime\\": "src-v3/"}},
+  "extra": {"marker": "feature-3"}
+}
+JSON
+git -C "$FIX" add composer.json
+git -C "$FIX" commit -q -m 'feature 3'
+TARGET_DEV_SHA="$(git -C "$FIX" rev-parse HEAD)"
+
+FAST_COMPOSER_TTL=99999 "${FC[@]}" update acme/runtime-fixture --no-interaction --no-plugins --no-scripts --no-audit -q >/dev/null
+php -r '
+$l=json_decode(file_get_contents("composer.lock"),true,512,JSON_THROW_ON_ERROR);
+$p=null;foreach($l["packages"] as $row){if($row["name"]==="acme/runtime-fixture"){$p=$row;break;}}
+if(!$p)throw new RuntimeException("fixture missing");
+if(($p["source"]["reference"]??null)!==$argv[1])throw new RuntimeException("targeted dev branch SHA was not refreshed");
+if(($p["extra"]["marker"]??null)!=="feature-3")throw new RuntimeException("targeted dev branch metadata was not refreshed");
+if(($p["autoload"]["psr-4"]["Acme\\Runtime\\"]??null)!=="src-v3/")throw new RuntimeException("targeted dev branch autoload metadata was not refreshed");
+' "$TARGET_DEV_SHA"
+assert_clean_root "$ROOT_DEV"
+echo "targeted-mutable-dev-branch: PASS"
+
 if ! find "$FAST_COMPOSER_CACHE_DIR/projects" -name snapshot.json -type f | grep -q .; then
   echo "snapshot was not persisted in the external Fast Composer cache" >&2
   exit 1

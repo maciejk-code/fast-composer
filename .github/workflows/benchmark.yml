@@ -1,7 +1,10 @@
 name: Benchmark
+# Run performance checks for implementation/test changes so Git-call regressions are visible in PRs.
 on:
   pull_request:
     paths:
+      - 'src/**'
+      - 'tests/**'
       - 'benchmarks/**'
       - '.github/workflows/benchmark.yml'
   workflow_dispatch:

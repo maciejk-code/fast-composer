@@ -20,6 +20,8 @@ final class Snapshot
     private string $root;
     private string $cacheDir;
     private string $workStem;
+    /** @var array<string,array> Exact-SHA source metadata fetched during this process only. */
+    private array $operationMetadata = [];
 
     public function __construct(string $root)
     {
@@ -229,19 +231,12 @@ final class Snapshot
         }
 
         $ref = 'refs/heads/'.$branch;
-        $out = Process::must(['git', 'ls-remote', $url, $ref], $this->root);
-        $line = trim($out);
-        if ($line === '') {
-            throw new \RuntimeException("Branch $branch not found for $package");
-        }
-
-        $sha = preg_split('/\s+/', $line)[0];
+        [$sha, $meta] = $this->composerAtRef($url, $ref, "Branch $branch not found for $package");
         $version = $this->branchVersion($branch);
         $existing = $snapshot['packages'][$package][$version] ?? null;
         if (is_array($existing) && ($existing['source']['reference'] ?? null) === $sha) {
             $pkg = $existing;
         } else {
-            $meta = $this->metadataAt($url, $sha);
             if (($meta['name'] ?? null) !== $package) {
                 throw new \RuntimeException("Repository package name mismatch: expected $package");
             }
@@ -370,6 +365,8 @@ final class Snapshot
         $remote = $this->remoteVersions($url);
         $existing = $snapshot['packages'][$package] ?? [];
         $next = [];
+        $pending = [];
+        $missingShas = [];
 
         foreach ($remote['versions'] as $version => $ref) {
             $current = $existing[$version] ?? null;
@@ -378,11 +375,38 @@ final class Snapshot
                 continue;
             }
 
-            $meta = $this->metadataAt($url, $ref['sha']);
-            if (($meta['name'] ?? null) !== $package) {
-                throw new \RuntimeException("Repository package name mismatch for $url: expected $package");
+            $cached = $this->composerCacheMetadata($url, $ref['sha']);
+            if (is_array($cached)) {
+                if (($cached['name'] ?? null) !== $package) {
+                    throw new \RuntimeException("Repository package name mismatch for $url: expected $package");
+                }
+                $next[$version] = $this->packageFromMetadata($cached, $package, $version, $url, $ref['sha']);
+                continue;
             }
-            $next[$version] = $this->packageFromMetadata($meta, $package, $version, $url, $ref['sha']);
+
+            $key = $this->metadataKey($url, $ref['sha']);
+            if (isset($this->operationMetadata[$key])) {
+                $meta = $this->operationMetadata[$key];
+                if (($meta['name'] ?? null) !== $package) {
+                    throw new \RuntimeException("Repository package name mismatch for $url: expected $package");
+                }
+                $next[$version] = $this->packageFromMetadata($meta, $package, $version, $url, $ref['sha']);
+                continue;
+            }
+
+            $pending[$version] = $ref;
+            $missingShas[$ref['sha']] = true;
+        }
+
+        if ($missingShas !== []) {
+            $this->composerManyAt($url, array_keys($missingShas));
+            foreach ($pending as $version => $ref) {
+                $meta = $this->operationMetadata[$this->metadataKey($url, $ref['sha'])] ?? null;
+                if (!is_array($meta) || ($meta['name'] ?? null) !== $package) {
+                    throw new \RuntimeException("Repository package name mismatch for $url: expected $package");
+                }
+                $next[$version] = $this->packageFromMetadata($meta, $package, $version, $url, $ref['sha']);
+            }
         }
 
         if ($next === [] && $existing !== []) {
@@ -467,7 +491,15 @@ final class Snapshot
 
     private function metadataAt(string $url, string $sha): array
     {
-        return $this->composerCacheMetadata($url, $sha) ?? $this->composerAt($url, $sha);
+        $key = $this->metadataKey($url, $sha);
+        return $this->operationMetadata[$key]
+            ?? $this->composerCacheMetadata($url, $sha)
+            ?? $this->composerAt($url, $sha);
+    }
+
+    private function metadataKey(string $url, string $sha): string
+    {
+        return hash('sha256', $this->normalizeGitUrl($url)).':'.$sha;
     }
 
     private function composerCacheMetadata(string $url, string $sha): ?array
@@ -508,6 +540,70 @@ final class Snapshot
 
     private function composerAt(string $url, string $sha): array
     {
+        $key = $this->metadataKey($url, $sha);
+        if (isset($this->operationMetadata[$key])) {
+            return $this->operationMetadata[$key];
+        }
+
+        $this->composerManyAt($url, [$sha]);
+        $data = $this->operationMetadata[$key] ?? null;
+        if (!is_array($data)) {
+            throw new \RuntimeException('Invalid composer.json at '.$sha);
+        }
+        return $data;
+    }
+
+    /** @return array{0:string,1:array} */
+    private function composerAtRef(string $url, string $ref, string $notFoundMessage): array
+    {
+        $this->ensureDir();
+        $tmp = $this->dir().'/fetch-ref-'.bin2hex(random_bytes(5));
+        if (!mkdir($tmp, 0700, true) && !is_dir($tmp)) {
+            throw new \RuntimeException("Cannot create temporary directory $tmp");
+        }
+
+        try {
+            Process::must(['git', 'init', '-q'], $tmp);
+            Process::must(['git', 'remote', 'add', 'origin', $url], $tmp);
+            [$code, $out, $err] = Process::run(['git', 'fetch', '-q', '--depth=1', '--no-tags', 'origin', $ref], $tmp);
+            if ($code !== 0) {
+                throw new \RuntimeException($notFoundMessage.($err !== '' ? ': '.trim($err) : ''));
+            }
+
+            $sha = trim(Process::must(['git', 'rev-parse', 'FETCH_HEAD'], $tmp));
+            if ($sha === '') {
+                throw new \RuntimeException($notFoundMessage);
+            }
+            $json = Process::must(['git', 'show', $sha.':composer.json'], $tmp);
+            $data = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+            if (!is_array($data)) {
+                throw new \RuntimeException('Invalid composer.json at '.$sha);
+            }
+            $this->operationMetadata[$this->metadataKey($url, $sha)] = $data;
+            return [$sha, $data];
+        } finally {
+            $this->rrmdir($tmp);
+        }
+    }
+
+    /** @param list<string> $shas */
+    private function composerManyAt(string $url, array $shas): void
+    {
+        $shas = array_values(array_unique(array_filter($shas, static fn ($sha): bool => is_string($sha) && $sha !== '')));
+        if ($shas === []) {
+            return;
+        }
+
+        $missing = [];
+        foreach ($shas as $sha) {
+            if (!isset($this->operationMetadata[$this->metadataKey($url, $sha)])) {
+                $missing[] = $sha;
+            }
+        }
+        if ($missing === []) {
+            return;
+        }
+
         $this->ensureDir();
         $tmp = $this->dir().'/fetch-'.bin2hex(random_bytes(5));
         if (!mkdir($tmp, 0700, true) && !is_dir($tmp)) {
@@ -517,13 +613,20 @@ final class Snapshot
         try {
             Process::must(['git', 'init', '-q'], $tmp);
             Process::must(['git', 'remote', 'add', 'origin', $url], $tmp);
-            Process::must(['git', 'fetch', '-q', '--depth=1', 'origin', $sha], $tmp);
-            $json = Process::must(['git', 'show', $sha.':composer.json'], $tmp);
-            $data = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
-            if (!is_array($data)) {
-                throw new \RuntimeException('Invalid composer.json at '.$sha);
+
+            // Keep command lines bounded while amortizing SSH/TLS setup across many ref tips.
+            foreach (array_chunk($missing, 64) as $chunk) {
+                Process::must(array_merge(['git', 'fetch', '-q', '--depth=1', '--no-tags', 'origin'], $chunk), $tmp);
             }
-            return $data;
+
+            foreach ($missing as $sha) {
+                $json = Process::must(['git', 'show', $sha.':composer.json'], $tmp);
+                $data = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+                if (!is_array($data)) {
+                    throw new \RuntimeException('Invalid composer.json at '.$sha);
+                }
+                $this->operationMetadata[$this->metadataKey($url, $sha)] = $data;
+            }
         } finally {
             $this->rrmdir($tmp);
         }
