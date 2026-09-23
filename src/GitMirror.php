@@ -85,8 +85,11 @@ final class GitMirror
         $errors = [];
         foreach ($results as $url => [$code, $out, $err]) {
             if (str_ends_with((string) $url, '#HEAD')) {
-                if ($code === 0 && preg_match('{^ref: refs/heads/(\S+)\s+HEAD$}m', $out, $m)) {
-                    @file_put_contents($this->mirrorDir(substr((string) $url, 0, -5)).'/'.self::DEFAULT_BRANCH_FILE, $m[1]);
+                if ($code === 0) {
+                    // Remember the answer even when the remote HEAD is dangling (no symref), so
+                    // the question is not repeated on every run.
+                    $branch = preg_match('{^ref: refs/heads/(\S+)\s+HEAD$}m', $out, $m) ? $m[1] : '';
+                    @file_put_contents($this->mirrorDir(substr((string) $url, 0, -5)).'/'.self::DEFAULT_BRANCH_FILE, $branch);
                 }
                 continue;
             }
@@ -228,16 +231,16 @@ final class GitMirror
      */
     public function defaultBranch(string $url): string
     {
-        $heads = $this->refs($url)['heads'];
-        $remembered = @file_get_contents($this->mirrorDir($url).'/'.self::DEFAULT_BRANCH_FILE);
-        if (is_string($remembered) && isset($heads[trim($remembered)])) {
-            return trim($remembered);
-        }
-        foreach (['master', 'main'] as $candidate) {
-            if (isset($heads[$candidate])) {
-                return $candidate;
+        $file = $this->mirrorDir($url).'/'.self::DEFAULT_BRANCH_FILE;
+        $remembered = trim((string) @file_get_contents($file));
+        if ($remembered !== '') {
+            if (isset($this->refs($url)['heads'][$remembered])) {
+                return $remembered;
             }
+            // The remote default branch was renamed or deleted: ask again on the next sync.
+            @unlink($file);
         }
+        // Composer's GitDriver falls back to "master" when the remote HEAD is unknown.
         return 'master';
     }
 

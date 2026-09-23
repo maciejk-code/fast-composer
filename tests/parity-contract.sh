@@ -41,6 +41,14 @@ printf '{"name":"acme/renamed","type":"library"}\n' > "$REN/composer.json"
 g -C "$REN" commit -q -am 2
 g -C "$REN" tag 2.0.0
 
+# acme/dangling: a bare repository whose HEAD points to a branch that does not exist (common for
+# bare repos created with another default branch name). Composer then treats "master" as the
+# default branch, so no version gets "default-branch".
+DANGLING="$WORK/dangling.git"
+g clone -q --bare "$LIB" "$DANGLING"
+git --git-dir="$DANGLING" symbolic-ref HEAD refs/heads/does-not-exist
+git --git-dir="$DANGLING" config --unset-all remote.origin.url 2>/dev/null || true
+
 # $1 name, $2 composer.json, $3.. command (update ... / require ...)
 scenario() {
   local name="$1" json="$2"; shift 2
@@ -81,6 +89,8 @@ scenario branch-alias "{\"name\": \"acme/root\", \"minimum-stability\": \"dev\",
 scenario tags "{\"name\": \"acme/root\", $REPOS, \"require\": {\"acme/lib\": \"^1.0\"}}" update
 scenario renamed-package "{\"name\": \"acme/root\", $REPOS, \"require\": {\"acme/renamed\": \"^1.0\"}}" update
 scenario repository-exclude "{\"name\": \"acme/root\", \"repositories\": [{\"type\": \"vcs\", \"url\": \"$LIB\", \"exclude\": [\"acme/lib\"]}, $NOPACKAGIST], \"require\": {\"acme/lib\": \"^1.0\"}}" update
+
+scenario dangling-head "{\"name\": \"acme/root\", \"minimum-stability\": \"dev\", \"repositories\": [{\"type\": \"vcs\", \"url\": \"$DANGLING\"}, $NOPACKAGIST], \"require\": {\"acme/lib\": \"dev-main\"}}" update
 
 # require: composer.json must be edited exactly like Composer does (tabs, inline arrays kept),
 # including an empty "require": {} and several packages at once.
