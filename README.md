@@ -88,9 +88,9 @@ This fixture uses 24 local filesystem VCS repositories with 8 additional unused 
 
 | Scenario | Composer | Fast Composer | Composer / Fast |
 | --- | ---: | ---: | ---: |
-| First Fast Composer invocation / cold snapshot | — | 0.77 s | — |
-| Warm targeted no-op update | 0.64 s | 0.68 s | 0.94x |
-| Targeted discovery of a new tag | 0.63 s | 0.71 s | 0.89x |
+| First Fast Composer invocation / cold snapshot | — | 0.851 s | — |
+| Warm targeted no-op update | 0.634 s | 0.695 s | 0.91x |
+| Targeted discovery of a new tag | 0.648 s | 0.713 s | 0.91x |
 
 ### Remote-like VCS latency control
 
@@ -98,9 +98,9 @@ The same shape is served through a local `git daemon`, with Linux `netem` inject
 
 | Scenario | Composer | Fast Composer | Composer / Fast |
 | --- | ---: | ---: | ---: |
-| First Fast Composer invocation / cold snapshot | — | 6.63 s | — |
-| Warm targeted no-op update | 1.18 s | 1.21 s | 0.97x |
-| Targeted discovery of a new tag | 1.28 s | 1.45 s | 0.88x |
+| First Fast Composer invocation / cold snapshot | — | 6.626 s | — |
+| Warm targeted no-op update | 1.169 s | 1.186 s | 0.99x |
+| Targeted discovery of a new tag | 1.277 s | 1.436 s | 0.89x |
 
 ### Private-VCS-like workload
 
@@ -108,15 +108,15 @@ This fixture contains 40 VCS repositories, 20 root-required packages and 10 addi
 
 | Scenario | Composer | Fast Composer | Composer Git ops | Fast Git ops |
 | --- | ---: | ---: | ---: | ---: |
-| Targeted no-op update | 0.86 s | 0.87 s | 1 | 1 |
-| Broad no-op update | 5.28 s | **3.43 s** | 20 | 20 |
-| Moved explicit `dev-*` branch | 0.92 s | **0.86 s** | 1 | 1 |
+| Targeted no-op update | 0.849 s | **0.845 s** | 1 | 1 |
+| Broad no-op update | 5.239 s | **3.358 s** | 20 | 20 |
+| Moved explicit `dev-*` branch | 0.901 s | **0.844 s** | 1 | 1 |
 
 Both implementations selected the moved development branch correctly in all 3/3 runs.
 
 Before the targeted-refresh optimization, the same workload shape required 14 Git network operations for a Fast Composer targeted no-op and 15 for a moved development branch. The optimized exact-branch path reduces both to a single Git network operation while keeping exact-SHA source validation. Timings from separate hosted runners should not be treated as laboratory-grade before/after measurements; the call-count reduction is the stronger deterministic signal.
 
-**Current result:** targeted no-op updates are effectively at Composer parity in this synthetic private-VCS workload, moved explicit `dev-*` updates are slightly faster, and the broad private-VCS-like update is about **1.54x faster** (5.28 s / 3.43 s). Stable new-tag discovery is still modestly slower than standard Composer in these fixtures. A general performance claim should still be validated on the real private-SSH/VCS workload that motivated the project.
+**Current result:** targeted no-op updates are effectively at Composer parity in this synthetic private-VCS workload, moved explicit `dev-*` updates are slightly faster, and the broad private-VCS-like update is about **1.56x faster** (5.239 s / 3.358 s). Stable new-tag discovery is still modestly slower than standard Composer in these fixtures. A general performance claim should still be validated on the real private-SSH/VCS workload that motivated the project.
 
 Reproduce the measurements with:
 
