@@ -231,19 +231,12 @@ final class Snapshot
         }
 
         $ref = 'refs/heads/'.$branch;
-        $out = Process::must(['git', 'ls-remote', $url, $ref], $this->root);
-        $line = trim($out);
-        if ($line === '') {
-            throw new \RuntimeException("Branch $branch not found for $package");
-        }
-
-        $sha = preg_split('/\s+/', $line)[0];
+        [$sha, $meta] = $this->composerAtRef($url, $ref, "Branch $branch not found for $package");
         $version = $this->branchVersion($branch);
         $existing = $snapshot['packages'][$package][$version] ?? null;
         if (is_array($existing) && ($existing['source']['reference'] ?? null) === $sha) {
             $pkg = $existing;
         } else {
-            $meta = $this->metadataAt($url, $sha);
             if (($meta['name'] ?? null) !== $package) {
                 throw new \RuntimeException("Repository package name mismatch: expected $package");
             }
@@ -558,6 +551,39 @@ final class Snapshot
             throw new \RuntimeException('Invalid composer.json at '.$sha);
         }
         return $data;
+    }
+
+    /** @return array{0:string,1:array} */
+    private function composerAtRef(string $url, string $ref, string $notFoundMessage): array
+    {
+        $this->ensureDir();
+        $tmp = $this->dir().'/fetch-ref-'.bin2hex(random_bytes(5));
+        if (!mkdir($tmp, 0700, true) && !is_dir($tmp)) {
+            throw new \RuntimeException("Cannot create temporary directory $tmp");
+        }
+
+        try {
+            Process::must(['git', 'init', '-q'], $tmp);
+            Process::must(['git', 'remote', 'add', 'origin', $url], $tmp);
+            [$code, $out, $err] = Process::run(['git', 'fetch', '-q', '--depth=1', '--no-tags', 'origin', $ref], $tmp);
+            if ($code !== 0) {
+                throw new \RuntimeException($notFoundMessage.($err !== '' ? ': '.trim($err) : ''));
+            }
+
+            $sha = trim(Process::must(['git', 'rev-parse', 'FETCH_HEAD'], $tmp));
+            if ($sha === '') {
+                throw new \RuntimeException($notFoundMessage);
+            }
+            $json = Process::must(['git', 'show', $sha.':composer.json'], $tmp);
+            $data = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+            if (!is_array($data)) {
+                throw new \RuntimeException('Invalid composer.json at '.$sha);
+            }
+            $this->operationMetadata[$this->metadataKey($url, $sha)] = $data;
+            return [$sha, $data];
+        } finally {
+            $this->rrmdir($tmp);
+        }
     }
 
     /** @param list<string> $shas */
