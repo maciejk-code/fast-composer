@@ -1,12 +1,12 @@
 <?php
 require __DIR__.'/../vendor/autoload.php';
 
-use FastComposer\Primer;
 use FastComposer\Process;
 use FastComposer\Snapshot;
 
 $base = sys_get_temp_dir().'/fast-composer-test-'.bin2hex(random_bytes(4));
 mkdir($base, 0700, true);
+putenv('FAST_COMPOSER_CACHE_DIR='.$base.'/cache');
 
 $rrmdir = static function (string $dir) use (&$rrmdir): void {
     if (!is_dir($dir)) {
@@ -76,28 +76,59 @@ try {
     ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
 
     $snapshot = new Snapshot($root);
-    $state = (new Primer($root, $snapshot))->build($config);
+    $state = [];
+    $synced = $snapshot->sync($state, $config);
 
-    if (($state['repos'][$repo]['name'] ?? null) !== 'acme/a') {
+    if ($synced !== 1 || ($state['repos'][$repo]['name'] ?? null) !== 'acme/a') {
         throw new RuntimeException('repo mapping failed');
     }
     if (($state['packages']['acme/a']['1.0.0']['source']['reference'] ?? null) !== $lockedSha) {
         throw new RuntimeException('lock package snapshot failed');
     }
-    if (count($state['packages']['acme/a'] ?? []) !== 1) {
-        throw new RuntimeException('priming hydrated unused branch/tag metadata instead of staying lazy');
-    }
-    if (!isset($state['repos'][$repo]['refs']['heads']['main'], $state['repos'][$repo]['refs']['heads']['unused-a'], $state['repos'][$repo]['refs']['heads']['unused-b'])) {
-        throw new RuntimeException('priming did not index remote refs');
+    if (!isset($state['packages']['acme/a']['dev-unused-a'], $state['packages']['acme/a']['dev-unused-b'], $state['packages']['acme/a']['dev-main'])) {
+        throw new RuntimeException('sync did not index every branch: '.implode(', ', array_keys($state['packages']['acme/a'] ?? [])));
     }
     if (!$snapshot->isCompatible($state, $config)) {
-        throw new RuntimeException('primer produced an incompatible snapshot hash');
+        throw new RuntimeException('sync produced an incompatible snapshot hash');
     }
-    if (glob($snapshot->dir().'/prime-fetch-*')) {
-        throw new RuntimeException('primer left temporary fetch directories behind');
+    if (!glob($base.'/cache/mirrors/*.git')) {
+        throw new RuntimeException('mirror is not stored in the shared cache area');
     }
 
-    echo "lazy-primer: OK\n";
+    // Adding a repository only synchronizes the new one; removing it drops its packages.
+    $repo2 = $base.'/repo2';
+    mkdir($repo2);
+    Process::must(['git', 'init', '-q', '-b', 'main'], $repo2);
+    Process::must(['git', 'config', 'user.email', 'fast-composer-test@example.invalid'], $repo2);
+    Process::must(['git', 'config', 'user.name', 'fast-composer-test'], $repo2);
+    file_put_contents($repo2.'/composer.json', json_encode(['name' => 'acme/b', 'type' => 'library'])."\n");
+    Process::must(['git', 'add', 'composer.json'], $repo2);
+    Process::must(['git', 'commit', '-q', '-m', 'b'], $repo2);
+    $config2 = ['repositories' => [['type' => 'vcs', 'url' => $repo], ['type' => 'vcs', 'url' => $repo2]]];
+    if ($snapshot->isCompatible($state, $config2)) {
+        throw new RuntimeException('changed repositories must be detected');
+    }
+    $synced = (new Snapshot($root))->sync($state, $config2);
+    if ($synced !== 1 || ($state['repos'][$repo2]['name'] ?? null) !== 'acme/b' || !isset($state['packages']['acme/b']['dev-main'])) {
+        throw new RuntimeException('incremental sync did not add only the new repository (synced='.$synced.')');
+    }
+    $synced = (new Snapshot($root))->sync($state, $config);
+    if ($synced !== 0 || isset($state['packages']['acme/b']) || !isset($state['packages']['acme/a'])) {
+        throw new RuntimeException('removing a repository did not drop exactly its packages');
+    }
+
+    // A second project using the same repository reuses the shared mirror.
+    $otherRoot = $base.'/other-root';
+    mkdir($otherRoot);
+    file_put_contents($otherRoot.'/composer.json', json_encode($config)."\n");
+    $mirrorsBefore = glob($base.'/cache/mirrors/*.git');
+    $otherState = [];
+    (new Snapshot($otherRoot))->sync($otherState, $config);
+    if (glob($base.'/cache/mirrors/*.git') !== $mirrorsBefore || !isset($otherState['packages']['acme/a']['dev-unused-a'])) {
+        throw new RuntimeException('second project did not reuse the shared mirror');
+    }
+
+    echo "sync: OK\n";
 
     // Parallel runner keeps results keyed and complete.
     $parallel = Process::runMany([
@@ -117,7 +148,11 @@ try {
     Process::must(['git', 'commit', '-q', '-m', 'docs'], $repo);
     Process::must(['git', 'checkout', '-q', '-f', 'main'], $repo);
 
+    $snapshot = new Snapshot($root);
     $refreshed = $snapshot->refreshPackages($state, ['acme/a']);
+    if (!isset($state['repos'][$repo]['refs']['heads']['docs'])) {
+        throw new RuntimeException('refresh did not fetch the new docs branch');
+    }
     $versions = $state['packages']['acme/a'] ?? [];
     if ($refreshed !== 1 || !isset($versions['1.0.0'], $versions['dev-main'], $versions['dev-unused-a'], $versions['dev-unused-b'])) {
         throw new RuntimeException('mirror hydration missed versions: '.implode(', ', array_keys($versions)));

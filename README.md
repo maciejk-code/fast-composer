@@ -74,9 +74,11 @@ composer install
 
 ## First run
 
-If no compatible snapshot exists yet, Fast Composer falls back to a normal Composer solve with `--no-install`, then builds its snapshot. That first run can therefore be as slow as ordinary Composer. Subsequent targeted operations use the snapshot.
+If no compatible snapshot exists yet, Fast Composer does **not** run a regular Composer solve. It fetches every declared `type: vcs` repository into a local shallow mirror in parallel (one `git fetch` per repository, `FAST_COMPOSER_JOBS` at a time), indexes every branch/tag `composer.json` from those mirrors locally, and then continues on the normal fast path.
 
-Initial priming is lazy: metadata already selected by regular Composer is reused from `composer.lock`, while Fast Composer indexes branch/tag refs without fetching `composer.json` for every ref. Metadata for a new or moved ref is fetched only when it is actually needed.
+- **New clone or worktree of a project:** mirrors are shared by repository URL across projects, so it only needs an incremental fetch per repository.
+- **Changed `repositories`:** the snapshot is updated incrementally — only added repositories are synchronized, removed ones are dropped.
+- **`composer clear-cache`** does not touch Fast Composer's cache (see [Runtime behavior](#runtime-behavior)).
 
 ## Benchmarks
 
@@ -90,44 +92,45 @@ Measured on a 4-core Linux container, PHP 8.4.19, Composer 2.8.12, Git 2.43.0. T
 
 | Scenario | Composer | Fast Composer | Speed-up | Composer Git net ops | Fast Git net ops | Same lock as Composer |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| targeted no-op, first repository | 0.422 s | 0.294 s | **1.44x** | 1 | 1 | 5/5 |
-| targeted no-op, middle repository | 4.940 s | 0.306 s | **16.14x** | 20 | 1 | 5/5 |
-| targeted no-op, last repository | 9.855 s | 0.295 s | **33.41x** | 40 | 1 | 5/5 |
-| broad no-op, TTL expired | 9.798 s | 1.973 s | **4.97x** | 40 | 40 | 5/5 |
-| broad no-op, within TTL | 9.917 s | 0.319 s | **31.09x** | 40 | 2 | 5/5 |
-| targeted new tag, middle repository | 5.119 s | 0.334 s | **15.33x** | 20 | 1 | 5/5 |
-| moved dev branch, first repository | 0.501 s | 0.302 s | **1.66x** | 1 | 1 | 5/5 |
-| moved dev branch, last repository | 10.215 s | 0.309 s | **33.06x** | 40 | 1 | 5/5 |
-| first invocation (cold snapshot), last repository | 10.172 s | 10.710 s | **0.95x** | 40 | 80 | 5/5 |
+| targeted no-op, first repository | 0.433 s | 0.309 s | **1.40x** | 1 | 1 | 5/5 |
+| targeted no-op, middle repository | 5.074 s | 0.256 s | **19.82x** | 20 | 1 | 5/5 |
+| targeted no-op, last repository | 9.952 s | 0.308 s | **32.31x** | 40 | 1 | 5/5 |
+| broad no-op, TTL expired | 10.034 s | 0.898 s | **11.17x** | 40 | 40 | 5/5 |
+| broad no-op, within TTL | 9.945 s | 0.328 s | **30.32x** | 40 | 2 | 5/5 |
+| targeted new tag, middle repository | 5.283 s | 0.325 s | **16.26x** | 20 | 1 | 5/5 |
+| moved dev branch, first repository | 0.520 s | 0.323 s | **1.61x** | 1 | 1 | 5/5 |
+| moved dev branch, last repository | 10.334 s | 0.311 s | **33.23x** | 40 | 1 | 5/5 |
+| first invocation, new clone (shared mirrors warm), last repository | 10.236 s | 1.253 s | **8.17x** | 40 | 40 | 5/5 |
+| first invocation (empty cache), last repository | 10.164 s | 2.192 s | **4.64x** | 40 | 40 | 5/5 |
 
 ### Zero-latency control: 30 repositories, no added delay
 
 | Scenario | Composer | Fast Composer | Speed-up | Composer Git net ops | Fast Git net ops | Same lock as Composer |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| targeted no-op, first repository | 0.385 s | 0.253 s | **1.52x** | 1 | 1 | 5/5 |
-| targeted no-op, middle repository | 3.167 s | 0.269 s | **11.77x** | 15 | 1 | 5/5 |
-| targeted no-op, last repository | 6.002 s | 0.264 s | **22.73x** | 30 | 1 | 5/5 |
-| broad no-op, TTL expired | 6.119 s | 1.349 s | **4.54x** | 30 | 30 | 5/5 |
-| broad no-op, within TTL | 5.970 s | 0.252 s | **23.69x** | 30 | 2 | 5/5 |
-| targeted new tag, middle repository | 3.243 s | 0.293 s | **11.07x** | 15 | 1 | 5/5 |
-| moved dev branch, first repository | 0.451 s | 0.260 s | **1.73x** | 1 | 1 | 5/5 |
-| moved dev branch, last repository | 6.302 s | 0.253 s | **24.91x** | 30 | 1 | 5/5 |
-| first invocation (cold snapshot), last repository | 6.452 s | 6.662 s | **0.97x** | 30 | 60 | 5/5 |
+| targeted no-op, first repository | 0.418 s | 0.264 s | **1.58x** | 1 | 1 | 5/5 |
+| targeted no-op, middle repository | 3.231 s | 0.216 s | **14.96x** | 15 | 1 | 5/5 |
+| targeted no-op, last repository | 6.287 s | 0.265 s | **23.72x** | 30 | 1 | 5/5 |
+| broad no-op, TTL expired | 6.242 s | 0.576 s | **10.84x** | 30 | 30 | 5/5 |
+| broad no-op, within TTL | 6.417 s | 0.278 s | **23.08x** | 30 | 2 | 5/5 |
+| targeted new tag, middle repository | 3.385 s | 0.283 s | **11.96x** | 15 | 1 | 5/5 |
+| moved dev branch, first repository | 0.462 s | 0.270 s | **1.71x** | 1 | 1 | 5/5 |
+| moved dev branch, last repository | 6.753 s | 0.272 s | **24.83x** | 30 | 1 | 5/5 |
+| first invocation, new clone (shared mirrors warm), last repository | 6.510 s | 0.819 s | **7.95x** | 30 | 30 | 5/5 |
+| first invocation (empty cache), last repository | 6.566 s | 1.674 s | **3.92x** | 30 | 30 | 5/5 |
 
 ### Before / after this optimization round (same harness, 40 ms workload)
 
 | Scenario | Fast Composer v0.1 | Fast Composer now | v0.1 same lock as Composer | now |
 | --- | ---: | ---: | ---: | ---: |
-| targeted no-op, first repository | 0.436 s | 0.294 s | 0/5 | 5/5 |
-| targeted no-op, middle repository | 0.469 s | 0.306 s | 0/5 | 5/5 |
-| broad no-op, TTL expired | 9.455 s (80 ops) | 1.973 s (40 ops, parallel) | 0/5 | 5/5 |
-| broad no-op, within TTL | 5.743 s (40 ops) | 0.319 s (2 ops) | 0/5 | 5/5 |
-| targeted new tag, middle repository | 0.482 s (2 ops) | 0.334 s (1 op) | 0/5 | 5/5 |
-| first invocation (cold snapshot) | 14.021 s | 10.710 s | 5/5 | 5/5 |
+| targeted no-op, first repository | 0.436 s | 0.309 s | 0/5 | 5/5 |
+| targeted no-op, middle repository | 0.469 s | 0.256 s | 0/5 | 5/5 |
+| broad no-op, TTL expired | 9.455 s (80 ops) | 0.898 s (40 ops, parallel) | 0/5 | 5/5 |
+| broad no-op, within TTL | 5.743 s (40 ops) | 0.328 s (2 ops) | 0/5 | 5/5 |
+| targeted new tag, middle repository | 0.482 s (2 ops) | 0.325 s (1 op) | 0/5 | 5/5 |
+| first invocation (empty cache) | 14.021 s (80 ops) | 2.192 s (40 ops) | 5/5 | 5/5 |
+| first invocation, new clone of the project | 14.021 s | 1.253 s | 5/5 | 5/5 |
 
 v0.1 locks differed from Composer's only cosmetically (dropped package `time`, `{}` rewritten as `[]`), but that produced diff noise on every update.
-
-**Known weak spot:** the first invocation without a snapshot still runs a regular Composer solve and then indexes refs, so it is slightly slower than plain Composer (0.95x). See [First run](#first-run).
 
 Reproduce:
 
@@ -142,7 +145,7 @@ Knobs: `BENCH_REPOS`, `BENCH_EXTRA_BRANCHES`, `BENCH_RUNS`, `BENCH_GIT_DELAY_MS`
 
 ## Performance tuning
 
-- `FAST_COMPOSER_JOBS` (default 8): concurrent network Git operations for broad refreshes, priming, dev-branch revalidation and `verify`.
+- `FAST_COMPOSER_JOBS` (default 8): concurrent network Git operations for the first-run sync, broad refreshes, dev-branch revalidation and `verify`.
 - `FAST_COMPOSER_IN_PROCESS=0`: run the Composer solver as a subprocess. By default it runs in-process when `composer` on `PATH` is a regular Composer phar and Xdebug is not loaded.
 - Fast Composer keeps a shallow Git mirror per VCS repository under its cache directory; `fast-composer update` refreshes it with a single `git fetch`.
 
@@ -184,13 +187,13 @@ The TTL does not hide explicitly targeted packages or root `dev-*` refs.
 
 Fast operations are lock-only. Fast Composer automatically adds `--no-install` to `update` and `require`, so it does not create/update `vendor/` as part of the accelerated path.
 
-Snapshot/cache data lives outside the project working tree in the user's Composer cache area, keyed per project. Temporary Composer files are cleaned after every operation, including failures. The project should be left with only the intended `composer.json` / `composer.lock` changes.
+Snapshot/cache data lives outside the project working tree in `~/.cache/fast-composer` (`$XDG_CACHE_HOME/fast-composer`, `~/Library/Caches/fast-composer` on macOS, `%LOCALAPPDATA%/fast-composer` on Windows; override with `FAST_COMPOSER_CACHE_DIR`). It is deliberately outside Composer's `cache-dir`, so `composer clear-cache` keeps it. Snapshots are per project path; Git mirrors are shared per repository URL. Temporary Composer files are cleaned after every operation, including failures. The project should be left with only the intended `composer.json` / `composer.lock` changes.
 
 ## Authentication and secrets
 
 Fast Composer does not accept, copy, persist, or log GitHub tokens, SSH private keys, `auth.json`, or other credentials.
 
-Its VCS refresh path invokes Git directly (`git fetch` into a local mirror, `git ls-remote` while priming), so the VCS URL must already work with your normal Git authentication. SSH URLs work naturally when your SSH agent/key is configured. HTTPS URLs work when Git itself has credentials available through its normal credential mechanism.
+Its VCS refresh path invokes Git directly (`git fetch` into a local mirror), so the VCS URL must already work with your normal Git authentication. SSH URLs work naturally when your SSH agent/key is configured. HTTPS URLs work when Git itself has credentials available through its normal credential mechanism.
 
 A Composer-only OAuth token in `auth.json` is not automatically converted into Git credentials by Fast Composer. This is intentionally kept out of v0.1 to avoid duplicating or persisting credentials.
 

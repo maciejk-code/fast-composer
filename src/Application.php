@@ -92,41 +92,22 @@ final class Application
             $solveArgs = $this->lockOnlyArgs($args);
             $state = $snapshot->load();
             if (!$state || !$snapshot->isCompatible($state, $rootCfg)) {
-                fwrite(STDOUT, "[fast-composer] no compatible snapshot; priming once before fast operations\n");
-                fwrite(STDOUT, "[fast-composer] step 1/3: regular Composer solve (lock only)\n");
-                fwrite(STDOUT, "[fast-composer] this is usually the longest step; time depends on dependency graph size, Composer cache, VCS/network latency and local security scanning\n");
-                $code = $this->delegateComposer($solveArgs, $root);
-                if ($code !== 0) {
-                    return $code;
-                }
-
-                $primedRootCfg = $this->readJson($root.'/composer.json');
-                $primer = new Primer($root, $snapshot);
-                $repoCount = $this->vcsRepositoryCount($primedRootCfg);
-                printf("[fast-composer] step 2/3: indexing refs for %d VCS repositories (lightweight; no full clones)\n", $repoCount);
-                fwrite(STDOUT, "[fast-composer] existing lock metadata is reused; branch/tag composer.json metadata is fetched lazily when needed\n");
-                fwrite(STDOUT, "[fast-composer] this step depends mostly on repository count and Git/SSH/network latency; an unlocked repo may need one shallow HEAD metadata fetch to discover its package name\n");
-
-                $state = $primer->build(
-                    $primedRootCfg,
-                    static function (int $current, int $total, ?string $name, string $url, bool $needsName): void {
-                        $label = $name ?: $url;
-                        printf(
-                            "[fast-composer]   VCS %d/%d: %s%s\n",
-                            $current,
-                            $total,
-                            $label,
-                            $needsName ? ' (discovering package name)' : ''
-                        );
-                    }
-                );
-
+                // No regular Composer solve needed: fetch the repositories the snapshot does not
+                // cover yet (all of them on a first run, only added ones after a change of
+                // "repositories") in parallel, then continue on the fast path.
+                $pending = $this->vcsRepositoryCount($rootCfg) - $this->syncedRepositoryCount($state, $rootCfg);
                 printf(
-                    "[fast-composer] step 3/3: snapshot ready (repos=%d, cached lock versions=%d)\n",
+                    "[fast-composer] %s: synchronizing %d VCS repositories (one parallel git fetch each)\n",
+                    $state ? 'repositories changed' : 'no snapshot yet',
+                    $pending
+                );
+                $synced = $snapshot->sync($state, $rootCfg);
+                printf(
+                    "[fast-composer] snapshot ready (synchronized=%d, repos=%d, versions=%d)\n",
+                    $synced,
                     count($state['repos'] ?? []),
                     array_sum(array_map('count', $state['packages'] ?? []))
                 );
-                return 0;
             }
 
             $ttl = $this->ttl();
@@ -400,6 +381,18 @@ final class Application
         return false;
     }
 
+    private function syncedRepositoryCount(array $state, array $rootCfg): int
+    {
+        $count = 0;
+        foreach (($rootCfg['repositories'] ?? []) as $repo) {
+            if (is_array($repo) && ($repo['type'] ?? null) === 'vcs' && is_string($repo['url'] ?? null)
+                && !empty($state['repos'][$repo['url']]['checked_at'])) {
+                $count++;
+            }
+        }
+        return $count;
+    }
+
     private function vcsRepositoryCount(array $rootCfg): int
     {
         $count = 0;
@@ -559,7 +552,7 @@ final class Application
         echo "  fast-composer install [args...]  (delegates to standard Composer)\n";
         echo "  fast-composer --version\n\n";
         echo "Fast update/require operations always imply --no-install.\n";
-        echo "Initial priming reuses lock metadata and indexes VCS refs without hydrating every branch/tag.\n";
+        echo "The first run fetches every VCS repository in parallel into shared local mirrors; no regular Composer solve.\n";
         echo "FAST_COMPOSER_TTL controls broad full-update ref validation (default: 300 seconds).\n";
         echo "FAST_COMPOSER_CACHE_DIR overrides the Fast Composer cache base directory.\n";
         echo "FAST_COMPOSER_JOBS limits concurrent Git network operations (default: 8).\n";
