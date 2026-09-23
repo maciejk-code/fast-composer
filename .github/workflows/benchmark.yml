@@ -17,4 +17,7 @@ jobs:
           php-version: '8.4'
           tools: composer:2.10.3
       - run: composer install --no-interaction --prefer-dist
-      - run: bash benchmarks/run.sh
+      - name: Zero-latency control
+        run: bash benchmarks/run.sh
+      - name: Remote-like VCS latency
+        run: bash benchmarks/remote-latency.sh
