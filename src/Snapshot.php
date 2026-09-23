@@ -6,6 +6,7 @@ final class Snapshot
     public const FORMAT = 4;
     public const DEFAULT_TTL = 300;
     private const MIRROR_MARKER = 'fast-composer-synced';
+    private const MIRROR_HEAD = 'refs/fast-composer/HEAD';
 
     private const KEEP = [
         'name','description','type','keywords','homepage','license','authors','support','funding',
@@ -19,6 +20,7 @@ final class Snapshot
     ];
 
     private string $root;
+    private string $baseDir;
     private string $cacheDir;
     private string $workStem;
     /** @var array<string,?array> Exact-SHA source metadata read during this process only (null: no composer.json). */
@@ -32,7 +34,8 @@ final class Snapshot
     {
         $resolved = realpath($root);
         $this->root = $resolved !== false ? $resolved : rtrim($root, DIRECTORY_SEPARATOR);
-        $this->cacheDir = $this->cacheBaseDir().'/projects/'.substr(hash('sha256', $this->root), 0, 24);
+        $this->baseDir = $this->cacheBaseDir();
+        $this->cacheDir = $this->baseDir.'/projects/'.substr(hash('sha256', $this->root), 0, 24);
         $this->workStem = '.fast-composer-'.getmypid().'-'.bin2hex(random_bytes(4));
     }
 
@@ -108,43 +111,73 @@ final class Snapshot
         return true;
     }
 
+    /** Rebuild the snapshot from scratch (`fast-composer refresh`). */
     public function buildFromLockAndCache(array $rootConfig): array
     {
-        $snapshot = [
-            'format' => self::FORMAT,
-            'generated_at' => time(),
-            'repo_config_hash' => $this->repoConfigHash($rootConfig),
-            'repos' => [],
-            'packages' => [],
-        ];
-        $lock = $this->readLock();
+        $snapshot = [];
+        $this->sync($snapshot, $rootConfig);
+        return $snapshot;
+    }
 
-        foreach ($this->managedRepositories($rootConfig) as $url) {
-            $snapshot['repos'][$url] = ['url' => $url, 'managed' => true];
-        }
+    /**
+     * Bring a snapshot in line with the root configuration without a regular Composer solve.
+     *
+     * Repositories no longer declared are dropped, repositories already synchronized are kept
+     * as they are (the TTL and targeted refreshes handle them), and every other repository is
+     * fetched into its mirror in parallel and fully indexed from it. After this the snapshot
+     * holds every version Composer's VCS repositories would offer.
+     *
+     * @return int number of repositories synchronized
+     */
+    public function sync(array &$snapshot, array $rootConfig): int
+    {
+        $snapshot['format'] = self::FORMAT;
+        $snapshot['generated_at'] ??= time();
+        $snapshot['repos'] ??= [];
+        $snapshot['packages'] ??= [];
 
-        $this->mergeLockIntoSnapshot($snapshot, $rootConfig, $lock, false);
-
-        $urls = array_map('strval', array_keys($snapshot['repos']));
-        $errors = $this->fetchMirrors($urls);
-        foreach ($urls as $url) {
-            try {
-                if (isset($errors[$url])) {
-                    throw new \RuntimeException($errors[$url]);
-                }
-                if (empty($snapshot['repos'][$url]['name'])) {
-                    $this->discoverRepositoryName($snapshot, $url);
-                }
-                if (!empty($snapshot['repos'][$url]['name'])) {
-                    $this->hydrateFromMirror($snapshot, $url, $snapshot['repos'][$url]['name']);
-                }
-            } catch (\Throwable $e) {
-                $snapshot['repos'][$url]['last_error'] = $e->getMessage();
+        $declared = array_flip($this->managedRepositories($rootConfig));
+        foreach ($snapshot['repos'] as $url => $repo) {
+            if (isset($declared[$url])) {
+                continue;
+            }
+            unset($snapshot['repos'][$url]);
+            $name = $repo['name'] ?? null;
+            if (is_string($name) && $this->urlForPackage($snapshot, $name) === null) {
+                unset($snapshot['packages'][$name]);
             }
         }
 
+        // Lock entries map package names to repositories without any network access.
+        $this->mergeLockIntoSnapshot($snapshot, $rootConfig, $this->readLock(), false);
+
+        $pending = [];
+        foreach (array_keys($declared) as $url) {
+            if (empty($snapshot['repos'][$url]['checked_at'])) {
+                $pending[] = (string) $url;
+            }
+        }
+
+        $errors = $this->fetchMirrors($pending);
+        $unnamed = [];
+        foreach ($pending as $url) {
+            if (isset($errors[$url])) {
+                throw new \RuntimeException("Cannot synchronize VCS repository $url: ".$errors[$url]);
+            }
+            if (empty($snapshot['repos'][$url]['name'])) {
+                $unnamed[] = $url;
+            }
+        }
+        if ($unnamed !== []) {
+            $this->discoverRepositoryNames($snapshot, $unnamed);
+        }
+        foreach ($pending as $url) {
+            $this->hydrateFromMirror($snapshot, $url, $snapshot['repos'][$url]['name']);
+        }
+
+        $snapshot['repo_config_hash'] = $this->repoConfigHash($rootConfig);
         $this->save($snapshot);
-        return $snapshot;
+        return count($pending);
     }
 
     public function mergeLockIntoSnapshot(array &$snapshot, array $rootConfig, array $lock, bool $save = true): void
@@ -270,6 +303,10 @@ final class Snapshot
                 throw new \RuntimeException("No VCS repository mapping for $package. Run a normal Composer update once, then fast-composer refresh.");
             }
             $urls[$i] = $url;
+            if (isset($this->fetchedTips[$this->normalizeGitUrl($url)])) {
+                // All branch tips were fetched from the remote during this invocation.
+                continue;
+            }
             $ref = 'refs/heads/'.$branch;
             $commands[$i] = [array_merge(
                 $this->gitMirrorPrefix($this->ensureMirror($url)),
@@ -277,10 +314,15 @@ final class Snapshot
             ), $this->root];
         }
 
-        $results = Process::runMany($commands);
+        $locks = $this->lockMirrors(array_values(array_intersect_key($urls, $commands)));
+        try {
+            $results = Process::runMany($commands);
+        } finally {
+            $this->unlockMirrors($locks);
+        }
         $packages = [];
         foreach ($requests as $i => [$package, $branch]) {
-            [$code, , $err] = $results[$i];
+            [$code, , $err] = $results[$i] ?? [0, '', ''];
             $notFound = "Branch $branch not found for $package";
             if ($code !== 0) {
                 throw new \RuntimeException($notFound.($err !== '' ? ': '.trim($err) : ''));
@@ -503,6 +545,10 @@ final class Snapshot
     {
         $commands = [];
         foreach (array_values(array_unique($urls)) as $url) {
+            if (isset($this->fetchedTips[$this->normalizeGitUrl($url)])) {
+                // Already synchronized from the remote during this invocation.
+                continue;
+            }
             $dir = $this->ensureMirror($url);
             // The first fetch only takes the tips (--depth=1). Later fetches are incremental
             // against those tips; a repeated --depth would force an extra pack round even when
@@ -515,9 +561,19 @@ final class Snapshot
                 ['--', $url, '+refs/heads/*:refs/heads/*', '+refs/tags/*:refs/tags/*']
             ), $this->root];
         }
+        if ($commands === []) {
+            return [];
+        }
+
+        $locks = $this->lockMirrors(array_keys($commands));
+        try {
+            $results = Process::runMany($commands);
+        } finally {
+            $this->unlockMirrors($locks);
+        }
 
         $errors = [];
-        foreach (Process::runMany($commands) as $url => [$code, $out, $err]) {
+        foreach ($results as $url => [$code, $out, $err]) {
             if ($code !== 0) {
                 $errors[$url] = trim($err !== '' ? $err : $out) ?: "Cannot read refs from $url";
                 continue;
@@ -575,17 +631,53 @@ final class Snapshot
 
     private function discoverRepositoryName(array &$snapshot, string $url): void
     {
-        [$code, $out, $err] = Process::run(['git', 'ls-remote', $url, 'HEAD'], $this->root);
-        if ($code !== 0 || trim($out) === '') {
-            throw new \RuntimeException(trim($err !== '' ? $err : $out) ?: "Cannot resolve HEAD for $url");
+        $this->discoverRepositoryNames($snapshot, [$url]);
+    }
+
+    /**
+     * Package names from composer.json at each remote HEAD, as Composer determines them. Only
+     * needed for repositories that composer.lock does not map yet; fetched in parallel.
+     *
+     * @param list<string> $urls
+     */
+    private function discoverRepositoryNames(array &$snapshot, array $urls): void
+    {
+        $errors = $this->fetchMirrors($urls);
+        $commands = [];
+        foreach ($urls as $url) {
+            if (isset($errors[$url])) {
+                throw new \RuntimeException($errors[$url]);
+            }
+            $commands[$url] = [array_merge(
+                $this->gitMirrorPrefix($this->mirrorDir($url)),
+                ['fetch', '-q', '--depth=1', '--no-tags', '--no-write-fetch-head', '--', $url, '+HEAD:'.self::MIRROR_HEAD]
+            ), $this->root];
         }
-        $sha = preg_split('/\s+/', trim($out))[0];
-        $meta = $this->composerAt($url, $sha);
-        $name = $meta['name'] ?? null;
-        if (!is_string($name) || $name === '') {
-            throw new \RuntimeException("composer.json at $url HEAD has no package name");
+        $locks = $this->lockMirrors($urls);
+        try {
+            $results = Process::runMany($commands);
+        } finally {
+            $this->unlockMirrors($locks);
         }
-        $snapshot['repos'][$url]['name'] = $name;
+
+        foreach ($urls as $url) {
+            $candidates = [self::MIRROR_HEAD.':composer.json'];
+            if (($results[$url][0] ?? 1) !== 0) {
+                // Dangling remote HEAD: fall back to the conventional default branches.
+                $candidates = ['refs/heads/main:composer.json', 'refs/heads/master:composer.json'];
+            }
+            $name = null;
+            foreach ($this->catFile($this->mirrorDir($url), $candidates) as $object) {
+                $name = $this->decodeComposerJson($object)['name'] ?? null;
+                if (is_string($name) && $name !== '') {
+                    break;
+                }
+            }
+            if (!is_string($name) || $name === '') {
+                throw new \RuntimeException("composer.json at $url HEAD has no package name");
+            }
+            $snapshot['repos'][$url]['name'] = $name;
+        }
     }
 
     private function metadataKey(string $url, string $sha): string
@@ -659,8 +751,15 @@ final class Snapshot
             }
         }
 
+        $locks = $this->lockMirrors(array_values(array_unique(array_column($chunks, 0))));
+        try {
+            $results = Process::runMany($commands);
+        } finally {
+            $this->unlockMirrors($locks);
+        }
+
         $errors = [];
-        foreach (Process::runMany($commands) as $id => [$code, $out, $err]) {
+        foreach ($results as $id => [$code, $out, $err]) {
             [$url, $chunk] = $chunks[$id];
             if ($code !== 0) {
                 $errors[$url] = trim($err !== '' ? $err : $out) ?: 'Cannot fetch '.implode(', ', $chunk)." from $url";
@@ -794,19 +893,56 @@ final class Snapshot
         return is_array($data) ? $data : null;
     }
 
+    /**
+     * Mirrors are shared by every project that uses the same repository URL, so a new clone or
+     * worktree of a project does not start from zero.
+     */
     private function mirrorDir(string $url): string
     {
-        return $this->dir().'/mirrors/'.substr(hash('sha256', $this->normalizeGitUrl($url)), 0, 24).'.git';
+        return $this->baseDir.'/mirrors/'.substr(hash('sha256', $this->normalizeGitUrl($url)), 0, 24).'.git';
     }
 
     private function ensureMirror(string $url): string
     {
         $dir = $this->mirrorDir($url);
         if (!is_file($dir.'/HEAD')) {
-            $this->ensureDir();
+            $parent = dirname($dir);
+            if (!is_dir($parent) && !mkdir($parent, 0700, true) && !is_dir($parent)) {
+                throw new \RuntimeException("Cannot create mirror directory $parent");
+            }
             Process::must(['git', 'init', '-q', '--bare', $dir], $this->root);
         }
         return $dir;
+    }
+
+    /**
+     * Serialize fetches into a shared mirror across processes (other projects may use it).
+     * Locks are taken in a stable order so concurrent processes cannot deadlock.
+     *
+     * @param list<string> $urls
+     * @return list<resource>
+     */
+    private function lockMirrors(array $urls): array
+    {
+        $dirs = array_values(array_unique(array_map(fn (string $url): string => $this->mirrorDir($url), $urls)));
+        sort($dirs);
+        $handles = [];
+        foreach ($dirs as $dir) {
+            $handle = @fopen($dir.'.lock', 'c');
+            if ($handle !== false && flock($handle, LOCK_EX)) {
+                $handles[] = $handle;
+            }
+        }
+        return $handles;
+    }
+
+    /** @param list<resource> $handles */
+    private function unlockMirrors(array $handles): void
+    {
+        foreach ($handles as $handle) {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
     }
 
     /** @return list<string> */
@@ -1062,25 +1198,13 @@ final class Snapshot
         if (is_string($override) && trim($override) !== '') {
             return rtrim($override, '/\\');
         }
-        return $this->composerCacheBaseDir().'/fast-composer';
-    }
 
-    private function composerCacheBaseDir(): string
-    {
-        $cache = getenv('COMPOSER_CACHE_DIR');
-        if (is_string($cache) && trim($cache) !== '') {
-            return rtrim($cache, '/\\');
-        }
-
-        $composerHome = getenv('COMPOSER_HOME');
-        if (is_string($composerHome) && trim($composerHome) !== '') {
-            return rtrim($composerHome, '/\\').'/cache';
-        }
-
+        // Deliberately outside Composer's cache-dir: `composer clear-cache` must not throw away
+        // the snapshot and mirrors.
         if (PHP_OS_FAMILY === 'Windows') {
             $local = getenv('LOCALAPPDATA');
             if (is_string($local) && trim($local) !== '') {
-                return rtrim($local, '/\\').'/Composer';
+                return rtrim($local, '/\\').'/fast-composer';
             }
         }
 
@@ -1091,15 +1215,15 @@ final class Snapshot
         $home = rtrim($home, '/\\');
 
         if (PHP_OS_FAMILY === 'Darwin') {
-            return $home.'/Library/Caches/composer';
+            return $home.'/Library/Caches/fast-composer';
         }
 
         $xdg = getenv('XDG_CACHE_HOME');
         if (is_string($xdg) && trim($xdg) !== '') {
-            return rtrim($xdg, '/\\').'/composer';
+            return rtrim($xdg, '/\\').'/fast-composer';
         }
 
-        return $home.'/.cache/composer';
+        return $home.'/.cache/fast-composer';
     }
 
     private function isAbsolutePath(string $path): bool

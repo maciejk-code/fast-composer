@@ -153,7 +153,7 @@ composer update "${FLAGS[@]}"
 cp composer.json composer.lock "$WORK/state/"
 cp -a "$COMPOSER_CACHE_DIR" "$WORK/state/composer-cache"
 
-# Warm Fast Composer: first invocation primes the snapshot, a broad refresh syncs every mirror.
+# Warm Fast Composer: the first invocation syncs every repository into the snapshot and mirrors.
 "${FC[@]}" update "bench/$FIRST" "${FLAGS[@]}" >/dev/null
 cp "$WORK/state/composer.lock" composer.lock
 FAST_COMPOSER_TTL=0 "${FC[@]}" update "${FLAGS[@]}" >/dev/null
@@ -167,7 +167,12 @@ restore() {
   cp "$WORK/state/composer.json" "$WORK/state/composer.lock" "$ROOT/"
   rm -rf "$COMPOSER_CACHE_DIR" "$FAST_COMPOSER_CACHE_DIR"
   cp -a "$WORK/state/composer-cache" "$COMPOSER_CACHE_DIR"
-  if [ "${1:-warm}" = cold ]; then mkdir -p "$FAST_COMPOSER_CACHE_DIR"; else cp -a "$WORK/state/fast-cache" "$FAST_COMPOSER_CACHE_DIR"; fi
+  case "${1:-warm}" in
+    cold) mkdir -p "$FAST_COMPOSER_CACHE_DIR" ;;
+    # Another clone/worktree of the project: shared mirrors exist, no snapshot for this path.
+    newclone) cp -a "$WORK/state/fast-cache" "$FAST_COMPOSER_CACHE_DIR"; rm -rf "$FAST_COMPOSER_CACHE_DIR/projects" ;;
+    *) cp -a "$WORK/state/fast-cache" "$FAST_COMPOSER_CACHE_DIR" ;;
+  esac
 }
 
 measure() {
@@ -251,8 +256,9 @@ done
 scenario "moved dev branch, first repository" warm update "bench/$FIRST" "${FLAGS[@]}" -- update "bench/$FIRST" "${FLAGS[@]}"
 scenario "moved dev branch, last repository" warm update "bench/$LAST" "${FLAGS[@]}" -- update "bench/$LAST" "${FLAGS[@]}"
 
-# First ever Fast Composer invocation (runs a regular Composer solve, then indexes refs).
-scenario "first invocation (cold snapshot), last repository" cold update "bench/$LAST" "${FLAGS[@]}" -- update "bench/$LAST" "${FLAGS[@]}"
+# First Fast Composer invocation in a project: parallel sync of all repositories, then the fast path.
+scenario "first invocation, new clone (shared mirrors warm), last repository" newclone update "bench/$LAST" "${FLAGS[@]}" -- update "bench/$LAST" "${FLAGS[@]}"
+scenario "first invocation (empty cache), last repository" cold update "bench/$LAST" "${FLAGS[@]}" -- update "bench/$LAST" "${FLAGS[@]}"
 
 # --- Report -----------------------------------------------------------------------------------
 REPORT="$WORK/report.md"

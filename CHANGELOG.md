@@ -6,7 +6,10 @@
 
 - VCS refresh uses a persistent shallow mirror per repository (in the Fast Composer cache): one `git fetch` both lists refs and downloads new tips, replacing the `ls-remote` + throw-away clone pair. The first fetch is `--depth=1`; later fetches are incremental.
 - `composer.json` of all new refs is read with a single `git cat-file --batch` instead of one `git show` per ref.
-- Broad refreshes, priming, explicit `dev-*` revalidation, changed-package validation and `verify` run their network Git operations concurrently (`FAST_COMPOSER_JOBS`, default 8).
+- The first run no longer delegates to a regular Composer solve: it fetches all VCS repositories in parallel into mirrors, indexes them locally and continues on the fast path. A changed `repositories` list is synchronized incrementally instead of forcing a full re-prime.
+- Mirrors are shared per repository URL across projects, so new clones/worktrees start warm.
+- The cache moved out of Composer's `cache-dir` to `~/.cache/fast-composer` (platform equivalents; `FAST_COMPOSER_CACHE_DIR` still overrides), so `composer clear-cache` no longer discards it.
+- Broad refreshes, the first-run sync, explicit `dev-*` revalidation, changed-package validation and `verify` run their network Git operations concurrently (`FAST_COMPOSER_JOBS`, default 8).
 - A broad refresh no longer fetches explicit `dev-*` branches a second time.
 - The Composer solver runs in-process when `composer` is a regular phar (falls back to a subprocess otherwise, with Xdebug loaded, or with `FAST_COMPOSER_IN_PROCESS=0`). `bin/fast-composer` now uses its own autoloader so foreign global packages cannot leak into that process.
 - The inner Composer run skips root-version guessing (`COMPOSER_ROOT_VERSION`) when nothing can reference the root package, and skips `stty` probing when output is not a terminal.
@@ -23,7 +26,7 @@
 
 ### Upgrade note
 
-- Snapshot format bumped to 4: the first invocation after upgrading re-primes once.
+- Snapshot format bumped to 4 and the cache location changed: the first invocation after upgrading synchronizes once. The old `<composer cache-dir>/fast-composer` directory can be deleted.
 
 ## 0.1.0 - 2026-09-16
 
