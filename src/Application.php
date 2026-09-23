@@ -58,6 +58,8 @@ final class Application
             }
 
             if ($cmd === 'refresh') {
+                fwrite(STDOUT, "[fast-composer] rebuilding full VCS snapshot\n");
+                fwrite(STDOUT, "[fast-composer] this is the exhaustive path: it may read metadata for many refs; time depends on repository/ref count, Git/SSH latency and cache warmth\n");
                 $state = $snapshot->buildFromLockAndCache($rootCfg);
                 printf(
                     "snapshot repos=%d versions=%d\n",
@@ -88,17 +90,46 @@ final class Application
             $solveArgs = $this->lockOnlyArgs($args);
             $state = $snapshot->load();
             if (!$state || !$snapshot->isCompatible($state, $rootCfg)) {
-                fwrite(STDOUT, "[fast-composer] priming snapshot with regular Composer (lock only)\n");
+                fwrite(STDOUT, "[fast-composer] no compatible snapshot; priming once before fast operations\n");
+                fwrite(STDOUT, "[fast-composer] step 1/3: regular Composer solve (lock only)\n");
+                fwrite(STDOUT, "[fast-composer] this is usually the longest step; time depends on dependency graph size, Composer cache, VCS/network latency and local security scanning\n");
                 $code = $this->delegateComposer($solveArgs, $root);
                 if ($code !== 0) {
                     return $code;
                 }
-                $snapshot->buildFromLockAndCache($this->readJson($root.'/composer.json'));
+
+                $primedRootCfg = $this->readJson($root.'/composer.json');
+                $primer = new Primer($root, $snapshot);
+                $repoCount = $this->vcsRepositoryCount($primedRootCfg);
+                printf("[fast-composer] step 2/3: indexing refs for %d VCS repositories (lightweight; no full clones)\n", $repoCount);
+                fwrite(STDOUT, "[fast-composer] existing lock metadata is reused; branch/tag composer.json metadata is fetched lazily when needed\n");
+                fwrite(STDOUT, "[fast-composer] this step depends mostly on repository count and Git/SSH/network latency; an unlocked repo may need one shallow HEAD metadata fetch to discover its package name\n");
+
+                $state = $primer->build(
+                    $primedRootCfg,
+                    static function (int $current, int $total, ?string $name, string $url, bool $needsName): void {
+                        $label = $name ?: $url;
+                        printf(
+                            "[fast-composer]   VCS %d/%d: %s%s\n",
+                            $current,
+                            $total,
+                            $label,
+                            $needsName ? ' (discovering package name)' : ''
+                        );
+                    }
+                );
+
+                printf(
+                    "[fast-composer] step 3/3: snapshot ready (repos=%d, cached lock versions=%d)\n",
+                    count($state['repos'] ?? []),
+                    array_sum(array_map('count', $state['packages'] ?? []))
+                );
                 return 0;
             }
 
             $ttl = $this->ttl();
             if ($cmd === 'require') {
+                fwrite(STDOUT, "[fast-composer] refreshing requested VCS ref; network/SSH latency can dominate this step\n");
                 $this->refreshForRequire($snapshot, $state, $args);
             } else {
                 $targets = $this->packageArguments(array_slice($args, 1));
@@ -148,6 +179,7 @@ final class Application
             unlink($fastLock);
         }
 
+        fwrite(STDOUT, "[fast-composer] solving dependency graph from cached snapshot (lock only)\n");
         $oldComposerEnv = getenv('COMPOSER');
         try {
             putenv('COMPOSER='.$fastComposer);
@@ -180,9 +212,12 @@ final class Application
             }
         }
 
+        fwrite(STDOUT, "[fast-composer] Composer solve finished; validating changed VCS metadata against the exact locked SHA\n");
+        fwrite(STDOUT, "[fast-composer] validation can pause here if an exact SHA is not cached: Fast Composer performs a shallow git fetch; duration depends on changed package count and Git/SSH/network latency\n");
         $afterLock = $snapshot->readLock($fastLock);
         $snapshot->validateChangedPackages($beforeLock, $afterLock, $rootCfg);
         $snapshot->fixContentHash($fastLock, $rootCfg);
+        fwrite(STDOUT, "[fast-composer] validation complete; publishing composer files\n");
 
         $newComposer = ($args[0] ?? null) === 'require'
             ? json_encode($rootCfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)."\n"
@@ -275,6 +310,17 @@ final class Application
             }
         }
         return false;
+    }
+
+    private function vcsRepositoryCount(array $rootCfg): int
+    {
+        $count = 0;
+        foreach (($rootCfg['repositories'] ?? []) as $repo) {
+            if (is_array($repo) && ($repo['type'] ?? null) === 'vcs' && is_string($repo['url'] ?? null)) {
+                $count++;
+            }
+        }
+        return $count;
     }
 
     private function status(Snapshot $snapshot, array $rootCfg): int
@@ -425,6 +471,7 @@ final class Application
         echo "  fast-composer install [args...]  (delegates to standard Composer)\n";
         echo "  fast-composer --version\n\n";
         echo "Fast update/require operations always imply --no-install.\n";
+        echo "Initial priming reuses lock metadata and indexes VCS refs without hydrating every branch/tag.\n";
         echo "FAST_COMPOSER_TTL controls broad full-update ref validation (default: 300 seconds).\n";
         echo "FAST_COMPOSER_CACHE_DIR overrides the Fast Composer cache base directory.\n";
         echo "Targeted update/require and explicit root dev-* constraints always bypass the TTL.\n";
