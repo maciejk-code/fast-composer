@@ -13,6 +13,7 @@ final class GitMirror
 {
     private const SYNC_MARKER = 'fast-composer-synced';
     private const DEFAULT_BRANCH_FILE = 'fast-composer-default-branch';
+    private const AUTH_FILE = 'fast-composer-auth';
 
     /** @var array<string,?array> composer.json per URL+SHA read during this process (null: none). */
     private array $metadata = [];
@@ -417,24 +418,42 @@ final class GitMirror
     }
 
     /**
-     * Attach the credentials Composer would use for $url to a network Git command.
+     * Prepare a network Git command for $url when Composer has credentials for its host.
+     *
+     * Like Composer, the first attempt uses Git's own authentication (SSH agent, credential
+     * helper) and Composer's credentials only when that is refused. The method that worked is
+     * remembered per repository, so later runs start with it and do not repeat a failing
+     * attempt (or send a token that is not needed).
      *
      * @param array{0:list<string>,1:string} $command
-     * @return array{0:list<string>,1:string,2?:array<string,string>}
+     * @return array{0:list<string>,1:string,2?:array<string,string>,3?:array{url:string,method:string,credentials:array<string,string>}}
      */
     private function remote(string $url, array $command): array
     {
-        $env = $this->credentials !== null ? ($this->credentials)($url) : [];
-        if ($env !== []) {
-            $command[2] = $env;
+        $credentials = $this->credentials !== null ? ($this->credentials)($url) : [];
+        if ($credentials === []) {
+            return $command;
         }
+        $method = trim((string) @file_get_contents($this->mirrorDir($url).'/'.self::AUTH_FILE)) === 'composer' ? 'composer' : 'git';
+        if ($method === 'composer') {
+            $command[2] = $credentials;
+        }
+        $command[3] = ['url' => $url, 'method' => $method, 'credentials' => $credentials];
         return $command;
+    }
+
+    private function rememberAuthMethod(string $url, string $method): void
+    {
+        $file = $this->mirrorDir($url).'/'.self::AUTH_FILE;
+        if (trim((string) @file_get_contents($file)) !== $method) {
+            @file_put_contents($file, $method);
+        }
     }
 
     /**
      * Run Git commands concurrently while holding the locks of the mirrors they write to.
      *
-     * @param array<array-key,array{0:list<string>,1:?string,2?:array<string,string>}> $commands [args, cwd, credentials environment]
+     * @param array<array-key,array{0:list<string>,1:?string,2?:array<string,string>,3?:array{url:string,method:string,credentials:array<string,string>}}> $commands [args, cwd, credentials environment, auth metadata]
      * @param list<string> $urls repositories whose mirrors the commands write
      * @param callable(array-key):string $labelOf
      */
@@ -484,7 +503,7 @@ final class GitMirror
      * Run Git commands concurrently and report per-repository progress plus a heartbeat naming
      * what is still running, so a slow or stuck remote is visible instead of silent.
      *
-     * @param array<array-key,array{0:list<string>,1:?string,2?:array<string,string>}> $commands [args, cwd, credentials environment]
+     * @param array<array-key,array{0:list<string>,1:?string,2?:array<string,string>,3?:array{url:string,method:string,credentials:array<string,string>}}> $commands [args, cwd, credentials environment, auth metadata]
      * @param callable(array-key):string $labelOf
      */
     private function run(array $commands, string $what, callable $labelOf): array
@@ -497,19 +516,35 @@ final class GitMirror
 
         $results = $this->runWithProgress($commands, $labelOf);
 
-        // Composer credentials were tried first; like Composer (which tries both), fall back to
-        // Git's own authentication (SSH agent, credential helper) when they were not accepted.
+        // Where Composer has credentials for the host, retry a refused attempt with the other
+        // authentication method (Composer's credentials <-> Git's own) and remember the winner.
         $retry = [];
         foreach ($results as $key => [$code]) {
-            if ($code !== 0 && isset($commands[$key][2])) {
-                $retry[$key] = [$commands[$key][0], $commands[$key][1]];
+            $auth = $commands[$key][3] ?? null;
+            if ($auth === null) {
+                continue;
             }
+            if ($code === 0) {
+                $this->rememberAuthMethod($auth['url'], $auth['method']);
+                continue;
+            }
+            $other = $auth['method'] === 'composer' ? 'git' : 'composer';
+            $retry[$key] = $other === 'composer'
+                ? [$commands[$key][0], $commands[$key][1], $auth['credentials'], ['method' => $other] + $auth]
+                : [$commands[$key][0], $commands[$key][1], 3 => ['method' => $other] + $auth];
         }
         if ($retry !== []) {
-            $this->log(sprintf('retrying %d without Composer credentials', count($retry)));
+            $withComposer = count(array_filter($retry, static fn (array $command): bool => $command[3]['method'] === 'composer'));
+            $this->log(sprintf(
+                'retrying %d refused: %d with Composer credentials (auth.json/COMPOSER_AUTH), %d with Git\'s own authentication',
+                count($retry),
+                $withComposer,
+                count($retry) - $withComposer
+            ));
             foreach ($this->runWithProgress($retry, $labelOf) as $key => $result) {
                 if ($result[0] === 0) {
                     $results[$key] = $result;
+                    $this->rememberAuthMethod($retry[$key][3]['url'], $retry[$key][3]['method']);
                 }
             }
         }
