@@ -80,7 +80,16 @@ final class GitMirror
         }
 
         $urlsToLock = array_values(array_filter(array_keys($commands), static fn ($key): bool => !str_ends_with((string) $key, '#HEAD')));
-        $results = $this->runLocked($commands, $urlsToLock, 'fetching VCS repositories', static fn ($key): string => str_ends_with((string) $key, '#HEAD') ? substr((string) $key, 0, -5).' (default branch)' : (string) $key);
+        $lookups = count($commands) - count($urlsToLock);
+        $what = $lookups === 0
+            ? sprintf('fetching %d VCS repositories', count($urlsToLock))
+            : sprintf(
+                'fetching %d VCS repositories and, once per repository, the default branch of %d (%d Git operations)',
+                count($urlsToLock),
+                $lookups,
+                count($commands)
+            );
+        $results = $this->runLocked($commands, $urlsToLock, $what, static fn ($key): string => str_ends_with((string) $key, '#HEAD') ? substr((string) $key, 0, -5).' (default branch)' : (string) $key);
 
         $errors = [];
         foreach ($results as $url => [$code, $out, $err]) {
@@ -481,7 +490,10 @@ final class GitMirror
     private function run(array $commands, string $what, callable $labelOf): array
     {
         $total = count($commands);
-        $this->log(sprintf('%s: %d (up to %d in parallel)', $what, $total, min($total, Process::defaultJobs())));
+        // $what either ends with its own count ("...: N" is appended otherwise).
+        $this->log(preg_match('/\d/', $what)
+            ? sprintf('%s, up to %d in parallel', $what, min($total, Process::defaultJobs()))
+            : sprintf('%s: %d (up to %d in parallel)', $what, $total, min($total, Process::defaultJobs())));
 
         $results = $this->runWithProgress($commands, $labelOf);
 
