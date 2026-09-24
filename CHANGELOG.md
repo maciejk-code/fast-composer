@@ -42,10 +42,13 @@
 - Each VCS repository becomes its own local `composer` repository in the same position with its `only` / `exclude` / `canonical` options, so repository priority and filters behave as in Composer.
 - The default branch is the remote HEAD (`git ls-remote --symref`, fetched in the same parallel batch and remembered per mirror; refreshed by `fast-composer refresh`). Composer asks the remote for it on every run.
 
+- HTTPS VCS repositories use the credentials Composer would use (`auth.json` of project and `COMPOSER_HOME`, `COMPOSER_AUTH`; GitHub/GitLab/Bitbucket/http-basic/bearer shaped like Composer's Git utility), passed to Git as an `Authorization` header via `GIT_CONFIG_*` environment variables — not on disk, not in the process list. Same order as Composer: Git's own authentication (SSH agent, credential helper) first, Composer's credentials only when that is refused, so a token is never sent where it is not needed. The method that worked is remembered per repository, so later runs do not repeat a refused attempt.
+
 ### Internal
 
 - Split the 1300-line `Snapshot` into `Snapshot` (state), `GitMirror` (all network Git access), `LockValidator` (safety contract) and small helpers (`RootConfig`, `LockFile`, `JsonFile`, `GitUrl`); moved solver invocation and argument parsing out of `Application` (`ComposerSolver`, `CommandLine`). No behavior change.
 - Unit tests split into `tests/unit/*.php`, each run in isolation by `tests/run.php`.
+- New end-to-end contracts: `tests/parity-contract.sh` (results byte-identical to plain Composer for every Composer behaviour Fast Composer once got wrong) and `tests/auth-contract.sh` (auth.json, fallback to Git credentials, clear failure). PHPStan level 5 (`phpstan.neon.dist`). `composer check` runs static analysis, unit tests and all contracts.
 
 ### Benchmarks
 

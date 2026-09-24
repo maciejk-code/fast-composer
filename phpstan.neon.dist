@@ -1,0 +1,8 @@
+parameters:
+    level: 5
+    paths:
+        - src
+        - bin
+    bootstrapFiles:
+        # Composer's own classes (JsonManipulator, VcsRepository, ...) come from the composer phar.
+        - tests/phpstan-bootstrap.php

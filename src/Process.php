@@ -50,7 +50,7 @@ final class Process
      * Commands run without a terminal prompt (GIT_TERMINAL_PROMPT=0): several concurrent
      * credential prompts would look like a hang, so a missing credential fails fast instead.
      *
-     * @param array<array-key,array{0:list<string>,1:?string}> $commands
+     * @param array<array-key,array{0:list<string>,1:?string,2?:array<string,string>}> $commands [args, cwd, extra environment]
      * @return array<array-key,array{0:int,1:string,2:string}> results keyed like $commands
      */
     public static function runMany(array $commands, ?int $jobs = null, ?callable $progress = null): array
@@ -68,9 +68,10 @@ final class Process
             while ($queue !== [] && count($running) < $jobs) {
                 $key = array_key_first($queue);
                 [$args, $cwd] = $queue[$key];
+                $extraEnv = $queue[$key][2] ?? [];
                 unset($queue[$key]);
 
-                $process = proc_open($args, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $cwd, $env);
+                $process = proc_open($args, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $cwd, $extraEnv + $env);
                 if (!is_resource($process)) {
                     $results[$key] = [127, '', 'Cannot start process: '.self::display($args)];
                     continue;
@@ -151,11 +152,12 @@ final class Process
 
         while ($open !== [] || $stdin !== null) {
             $read = array_values($open);
-            $write = $stdin !== null ? [$stdin] : null;
+            $write = $stdin !== null ? [$stdin] : [];
             $except = null;
             @stream_select($read, $write, $except, 1);
 
-            if ($stdin !== null && $write) {
+            // stream_select() reduces $write to the streams that are ready.
+            if ($stdin !== null && in_array($stdin, $write, true)) {
                 $written = fwrite($stdin, $input);
                 if ($written === false) {
                     $input = '';

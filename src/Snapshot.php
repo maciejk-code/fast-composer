@@ -115,7 +115,7 @@ final class Snapshot
     }
 
     /** Rebuild the snapshot from scratch (`fast-composer refresh`). */
-    public function buildFromLockAndCache(array $rootConfig): array
+    public function rebuild(array $rootConfig): array
     {
         $snapshot = [];
         $this->sync($snapshot, $rootConfig, true);
@@ -309,6 +309,18 @@ final class Snapshot
         $url = $repoConfig['url'];
         $refs = $this->mirror->refs($url);
         $root = $this->mirror->defaultBranch($url);
+        $previous = $snapshot['repos'][$url] ?? null;
+        if (is_array($previous) && isset($previous['packages'])
+            && ($previous['refs'] ?? null) === $refs && ($previous['root'] ?? null) === $root
+            && ($previous['config'] ?? null) === $repoConfig
+            && ($previous['composer'] ?? null) === ComposerPackages::composerVersion()) {
+            // Same refs, default branch, configuration and Composer version: Composer would derive exactly
+            // the same packages (composer.json at a commit never changes). Only the check time moves.
+            if ($checked) {
+                $snapshot['repos'][$url]['checked_at'] = time();
+            }
+            return;
+        }
         $files = $this->mirror->files($url, array_values(array_unique(array_merge(array_values($refs['heads']), array_values($refs['tags'])))));
 
         $this->composerPackages ??= new ComposerPackages($this->root);
@@ -333,6 +345,9 @@ final class Snapshot
             'managed' => true,
             'name' => $name ?? ($snapshot['repos'][$url]['name'] ?? null),
             'refs' => $refs,
+            'root' => $root,
+            'config' => $repoConfig,
+            'composer' => ComposerPackages::composerVersion(),
             'checked_at' => $checked ? time() : ($snapshot['repos'][$url]['checked_at'] ?? 0),
             'packages' => $packages,
         ];

@@ -13,6 +13,7 @@ final class GitMirror
 {
     private const SYNC_MARKER = 'fast-composer-synced';
     private const DEFAULT_BRANCH_FILE = 'fast-composer-default-branch';
+    private const AUTH_FILE = 'fast-composer-auth';
 
     /** @var array<string,?array> composer.json per URL+SHA read during this process (null: none). */
     private array $metadata = [];
@@ -22,6 +23,8 @@ final class GitMirror
     private array $synced = [];
     /** @var null|callable(string):void */
     private $logger = null;
+    /** @var null|callable(string):array<string,string> extra Git environment (credentials) per URL */
+    private $credentials = null;
 
     /**
      * @param string $baseDir cache base directory; mirrors live in $baseDir/mirrors
@@ -35,6 +38,12 @@ final class GitMirror
     public function setLogger(callable $logger): void
     {
         $this->logger = $logger;
+    }
+
+    /** @param callable(string):array<string,string> $credentials extra Git environment for a remote URL */
+    public function setCredentials(callable $credentials): void
+    {
+        $this->credentials = $credentials;
     }
 
     /**
@@ -58,27 +67,39 @@ final class GitMirror
             if ($refreshDefaultBranch || !is_file($dir.'/'.self::DEFAULT_BRANCH_FILE)) {
                 // Composer's root identifier is the remote HEAD branch; ask for it in the same
                 // parallel batch (it rarely changes, so it is remembered per mirror).
-                $commands[$url.'#HEAD'] = [['git', 'ls-remote', '--symref', '--', $url, 'HEAD'], $this->cwd];
+                $commands[$url.'#HEAD'] = $this->remote($url, [['git', 'ls-remote', '--symref', '--', $url, 'HEAD'], $this->cwd]);
             }
             // The first fetch only takes the tips (--depth=1). Later fetches are incremental
             // against those tips; a repeated --depth would force an extra pack round even when
             // nothing changed.
             $depth = is_file($dir.'/'.self::SYNC_MARKER) ? [] : ['--depth=1'];
-            $commands[$url] = $this->git($dir, array_merge(
+            $commands[$url] = $this->remote($url, $this->git($dir, array_merge(
                 ['fetch', '-q', '--prune', '--no-tags'],
                 $depth,
                 ['--', $url, '+refs/heads/*:refs/heads/*', '+refs/tags/*:refs/tags/*']
-            ));
+            )));
         }
 
         $urlsToLock = array_values(array_filter(array_keys($commands), static fn ($key): bool => !str_ends_with((string) $key, '#HEAD')));
-        $results = $this->runLocked($commands, $urlsToLock, 'fetching VCS repositories', static fn ($key): string => str_ends_with((string) $key, '#HEAD') ? substr((string) $key, 0, -5).' (default branch)' : (string) $key);
+        $lookups = count($commands) - count($urlsToLock);
+        $what = $lookups === 0
+            ? sprintf('fetching %d VCS repositories', count($urlsToLock))
+            : sprintf(
+                'fetching %d VCS repositories and, once per repository, the default branch of %d (%d Git operations)',
+                count($urlsToLock),
+                $lookups,
+                count($commands)
+            );
+        $results = $this->runLocked($commands, $urlsToLock, $what, static fn ($key): string => str_ends_with((string) $key, '#HEAD') ? substr((string) $key, 0, -5).' (default branch)' : (string) $key);
 
         $errors = [];
         foreach ($results as $url => [$code, $out, $err]) {
             if (str_ends_with((string) $url, '#HEAD')) {
-                if ($code === 0 && preg_match('{^ref: refs/heads/(\S+)\s+HEAD$}m', $out, $m)) {
-                    @file_put_contents($this->mirrorDir(substr((string) $url, 0, -5)).'/'.self::DEFAULT_BRANCH_FILE, $m[1]);
+                if ($code === 0) {
+                    // Remember the answer even when the remote HEAD is dangling (no symref), so
+                    // the question is not repeated on every run.
+                    $branch = preg_match('{^ref: refs/heads/(\S+)\s+HEAD$}m', $out, $m) ? $m[1] : '';
+                    @file_put_contents($this->mirrorDir(substr((string) $url, 0, -5)).'/'.self::DEFAULT_BRANCH_FILE, $branch);
                 }
                 continue;
             }
@@ -134,29 +155,20 @@ final class GitMirror
     }
 
     /**
-     * composer.json (with Composer's release "time") of commits already in the mirror, read
-     * with a single `git cat-file --batch`.
+     * composer.json of commits already in the mirror, read with a single `git cat-file --batch`.
      *
      * @param list<string> $shas
-     * @return array<string,?array> per SHA; null when the commit has no readable composer.json
+     * @return array<string,?array<string,mixed>> per SHA; null when the commit has no readable composer.json
      */
     public function metadata(string $url, array $shas): array
     {
-        $shas = array_values(array_unique(array_filter($shas, static fn ($sha): bool => is_string($sha) && $sha !== '')));
+        $shas = array_values(array_unique(array_filter($shas, static fn (string $sha): bool => $sha !== '')));
         $missing = array_values(array_filter($shas, fn (string $sha): bool => !array_key_exists($this->key($url, $sha), $this->metadata)));
 
         if ($missing !== []) {
-            $specs = [];
-            foreach ($missing as $sha) {
-                $specs[] = $sha.':composer.json';
-                $specs[] = $sha.'^{commit}';
-            }
-            $objects = $this->catFile($this->mirrorDir($url), $specs);
+            $objects = $this->catFile($this->mirrorDir($url), array_map(static fn (string $sha): string => $sha.':composer.json', $missing));
             foreach ($missing as $i => $sha) {
-                $this->metadata[$this->key($url, $sha)] = $this->withReleaseDate(
-                    $this->decodeComposerJson($objects[2 * $i] ?? null),
-                    $objects[2 * $i + 1] ?? null
-                );
+                $this->metadata[$this->key($url, $sha)] = $this->decodeComposerJson($objects[$i] ?? null);
             }
         }
 
@@ -184,9 +196,9 @@ final class GitMirror
                 continue;
             }
             $ref = 'refs/heads/'.$branch;
-            $commands[$key] = $this->git($this->ensureMirror($url), [
+            $commands[$key] = $this->remote($url, $this->git($this->ensureMirror($url), [
                 'fetch', '-q', '--depth=1', '--no-tags', '--no-write-fetch-head', '--', $url, '+'.$ref.':'.$ref,
-            ]);
+            ]));
             $urls[] = $url;
             $labels[$key] = $label;
         }
@@ -216,7 +228,7 @@ final class GitMirror
 
         $key = $this->key($url, $sha);
         $this->reachable[$key] = true;
-        $this->metadata[$key] = $this->withReleaseDate($this->decodeComposerJson($objects[1] ?? null), $objects[0]);
+        $this->metadata[$key] = $this->decodeComposerJson($objects[1] ?? null);
         if ($this->metadata[$key] === null) {
             throw new \RuntimeException('Invalid composer.json at '.$sha);
         }
@@ -229,16 +241,16 @@ final class GitMirror
      */
     public function defaultBranch(string $url): string
     {
-        $heads = $this->refs($url)['heads'];
-        $remembered = @file_get_contents($this->mirrorDir($url).'/'.self::DEFAULT_BRANCH_FILE);
-        if (is_string($remembered) && isset($heads[trim($remembered)])) {
-            return trim($remembered);
-        }
-        foreach (['master', 'main'] as $candidate) {
-            if (isset($heads[$candidate])) {
-                return $candidate;
+        $file = $this->mirrorDir($url).'/'.self::DEFAULT_BRANCH_FILE;
+        $remembered = trim((string) @file_get_contents($file));
+        if ($remembered !== '') {
+            if (isset($this->refs($url)['heads'][$remembered])) {
+                return $remembered;
             }
+            // The remote default branch was renamed or deleted: ask again on the next sync.
+            @unlink($file);
         }
+        // Composer's GitDriver falls back to "master" when the remote HEAD is unknown.
         return 'master';
     }
 
@@ -326,7 +338,7 @@ final class GitMirror
         foreach ($shasByUrl as $url => $shas) {
             $shas = array_values(array_unique(array_filter(
                 $shas,
-                fn ($sha): bool => is_string($sha) && $sha !== '' && !isset($this->reachable[$this->key($url, $sha)])
+                fn (string $sha): bool => $sha !== '' && !isset($this->reachable[$this->key($url, $sha)])
             )));
             if ($shas === []) {
                 continue;
@@ -334,10 +346,10 @@ final class GitMirror
             $dir = $this->ensureMirror($url);
             // Keep command lines bounded while amortizing SSH/TLS setup across many SHAs.
             foreach (array_chunk($shas, 64) as $i => $chunk) {
-                $commands[$url.'#'.$i] = $this->git($dir, array_merge(
+                $commands[$url.'#'.$i] = $this->remote($url, $this->git($dir, array_merge(
                     ['fetch', '-q', '--depth=1', '--no-tags', '--no-write-fetch-head', '--', $url],
                     $chunk
-                ));
+                )));
                 $chunks[$url.'#'.$i] = [$url, $chunk];
             }
         }
@@ -406,9 +418,42 @@ final class GitMirror
     }
 
     /**
+     * Prepare a network Git command for $url when Composer has credentials for its host.
+     *
+     * Like Composer, the first attempt uses Git's own authentication (SSH agent, credential
+     * helper) and Composer's credentials only when that is refused. The method that worked is
+     * remembered per repository, so later runs start with it and do not repeat a failing
+     * attempt (or send a token that is not needed).
+     *
+     * @param array{0:list<string>,1:string} $command
+     * @return array{0:list<string>,1:string,2?:array<string,string>,3?:array{url:string,method:string,credentials:array<string,string>}}
+     */
+    private function remote(string $url, array $command): array
+    {
+        $credentials = $this->credentials !== null ? ($this->credentials)($url) : [];
+        if ($credentials === []) {
+            return $command;
+        }
+        $method = trim((string) @file_get_contents($this->mirrorDir($url).'/'.self::AUTH_FILE)) === 'composer' ? 'composer' : 'git';
+        if ($method === 'composer') {
+            $command[2] = $credentials;
+        }
+        $command[3] = ['url' => $url, 'method' => $method, 'credentials' => $credentials];
+        return $command;
+    }
+
+    private function rememberAuthMethod(string $url, string $method): void
+    {
+        $file = $this->mirrorDir($url).'/'.self::AUTH_FILE;
+        if (trim((string) @file_get_contents($file)) !== $method) {
+            @file_put_contents($file, $method);
+        }
+    }
+
+    /**
      * Run Git commands concurrently while holding the locks of the mirrors they write to.
      *
-     * @param array<array-key,array{0:list<string>,1:?string}> $commands
+     * @param array<array-key,array{0:list<string>,1:?string,2?:array<string,string>,3?:array{url:string,method:string,credentials:array<string,string>}}> $commands [args, cwd, credentials environment, auth metadata]
      * @param list<string> $urls repositories whose mirrors the commands write
      * @param callable(array-key):string $labelOf
      */
@@ -458,14 +503,60 @@ final class GitMirror
      * Run Git commands concurrently and report per-repository progress plus a heartbeat naming
      * what is still running, so a slow or stuck remote is visible instead of silent.
      *
-     * @param array<array-key,array{0:list<string>,1:?string}> $commands
+     * @param array<array-key,array{0:list<string>,1:?string,2?:array<string,string>,3?:array{url:string,method:string,credentials:array<string,string>}}> $commands [args, cwd, credentials environment, auth metadata]
      * @param callable(array-key):string $labelOf
      */
     private function run(array $commands, string $what, callable $labelOf): array
     {
         $total = count($commands);
-        $this->log(sprintf('%s: %d (up to %d in parallel)', $what, $total, min($total, Process::defaultJobs())));
+        // $what either ends with its own count ("...: N" is appended otherwise).
+        $this->log(preg_match('/\d/', $what)
+            ? sprintf('%s, up to %d in parallel', $what, min($total, Process::defaultJobs()))
+            : sprintf('%s: %d (up to %d in parallel)', $what, $total, min($total, Process::defaultJobs())));
 
+        $results = $this->runWithProgress($commands, $labelOf);
+
+        // Where Composer has credentials for the host, retry a refused attempt with the other
+        // authentication method (Composer's credentials <-> Git's own) and remember the winner.
+        $retry = [];
+        foreach ($results as $key => [$code]) {
+            $auth = $commands[$key][3] ?? null;
+            if ($auth === null) {
+                continue;
+            }
+            if ($code === 0) {
+                $this->rememberAuthMethod($auth['url'], $auth['method']);
+                continue;
+            }
+            $other = $auth['method'] === 'composer' ? 'git' : 'composer';
+            $retry[$key] = $other === 'composer'
+                ? [$commands[$key][0], $commands[$key][1], $auth['credentials'], ['method' => $other] + $auth]
+                : [$commands[$key][0], $commands[$key][1], 3 => ['method' => $other] + $auth];
+        }
+        if ($retry !== []) {
+            $withComposer = count(array_filter($retry, static fn (array $command): bool => $command[3]['method'] === 'composer'));
+            $this->log(sprintf(
+                'retrying %d refused: %d with Composer credentials (auth.json/COMPOSER_AUTH), %d with Git\'s own authentication',
+                count($retry),
+                $withComposer,
+                count($retry) - $withComposer
+            ));
+            foreach ($this->runWithProgress($retry, $labelOf) as $key => $result) {
+                if ($result[0] === 0) {
+                    $results[$key] = $result;
+                    $this->rememberAuthMethod($retry[$key][3]['url'], $retry[$key][3]['method']);
+                }
+            }
+        }
+        return $results;
+    }
+
+    /**
+     * @param array<array-key,array{0:list<string>,1:?string,2?:array<string,string>}> $commands
+     * @return array<array-key,array{0:int,1:string,2:string}>
+     */
+    private function runWithProgress(array $commands, callable $labelOf): array
+    {
         return Process::runMany($commands, null, function (string $event, $subject, ?array $result, float $seconds, int $done, int $total) use ($labelOf): void {
             if ($event === 'done') {
                 [$code, , $err] = $result;
@@ -540,22 +631,6 @@ final class GitMirror
             return null;
         }
         return is_array($data) ? $data : null;
-    }
-
-    /**
-     * Same release date Composer's GitDriver records: the commit author date, unless
-     * composer.json declares its own "time".
-     */
-    private function withReleaseDate(?array $meta, ?array $commit): ?array
-    {
-        if ($meta === null || (isset($meta['time']) && is_string($meta['time']))) {
-            return $meta;
-        }
-        if ($commit !== null && $commit['type'] === 'commit'
-            && preg_match('/^author .* (\d+) [+-]\d{4}$/m', $commit['content'], $m)) {
-            $meta['time'] = (new \DateTimeImmutable('@'.$m[1]))->setTimezone(new \DateTimeZone('UTC'))->format(DATE_RFC3339);
-        }
-        return $meta;
     }
 
     private function log(string $message): void

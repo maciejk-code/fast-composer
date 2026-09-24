@@ -48,7 +48,7 @@ mkdir -p "$ROOT_TAG"
 cat > "$ROOT_TAG/composer.json" <<JSON
 {
   "name": "acme/root-tag",
-  "repositories": [{"type": "vcs", "url": "$FIX"}],
+  "repositories": [{"type": "vcs", "url": "$FIX"}, {"packagist.org": false}],
   "require": {"acme/runtime-fixture": "^1.0"}
 }
 JSON
@@ -100,7 +100,7 @@ mkdir -p "$ROOT_DEV"
 cat > "$ROOT_DEV/composer.json" <<JSON
 {
   "name": "acme/root-dev",
-  "repositories": [{"type": "vcs", "url": "$FIX"}],
+  "repositories": [{"type": "vcs", "url": "$FIX"}, {"packagist.org": false}],
   "require": {"acme/runtime-fixture": "dev-feature"},
   "minimum-stability": "dev"
 }
