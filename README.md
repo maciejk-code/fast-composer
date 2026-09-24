@@ -201,10 +201,12 @@ Snapshot/cache data lives outside the project working tree in `~/.cache/fast-com
 
 ## Authentication and secrets
 
-Fast Composer talks to VCS repositories with Git. For every network Git call it uses:
+Fast Composer talks to VCS repositories with Git, authenticating in Composer's order:
 
-1. **The credentials Composer would use** for an HTTP(S) URL — `auth.json` of the project and of `COMPOSER_HOME`, and `COMPOSER_AUTH` (`github-oauth`, `gitlab-token`/`gitlab-oauth`, `http-basic`, `bearer`), read with Composer's own configuration code and shaped like Composer's Git utility does. They are passed to Git as an `Authorization` header through `GIT_CONFIG_*` environment variables of that one process: never written to disk and not visible in the process list (Composer itself puts them into the URL).
-2. **Git's own authentication** — SSH keys/agent for `git@…` URLs, the credential helper for HTTPS. If Composer's credentials are rejected, the call is retried this way.
+1. **Git's own authentication** — SSH keys/agent for `git@…` URLs, the credential helper for HTTPS. Like Composer, this is always tried first.
+2. **The credentials Composer would use** for an HTTP(S) URL, only when Git's own attempt is refused — `auth.json` of the project and of `COMPOSER_HOME`, and `COMPOSER_AUTH` (`github-oauth`, `gitlab-token`/`gitlab-oauth`, `http-basic`, `bearer`), read with Composer's own configuration code and shaped like Composer's Git utility does. They are passed to Git as an `Authorization` header through `GIT_CONFIG_*` environment variables of that one process: never written to disk and not visible in the process list (Composer itself puts them into the URL).
+
+The method that worked is remembered per repository (a `fast-composer-auth` marker in its mirror, holding only `git` or `composer`), so later runs start with it instead of repeating a refused attempt; if it stops working, the other one is tried again. Repositories on hosts without Composer credentials never get any.
 
 Git runs non-interactively (`GIT_TERMINAL_PROMPT=0`), so missing credentials fail with a hint instead of hanging. Fast Composer never stores or logs credentials.
 
@@ -277,7 +279,7 @@ The repository maintains tests for:
 - lock-only accelerated updates (no `vendor/` materialization),
 - installation as a global Composer binary.
 - byte-identical results to plain Composer for default branches, branch aliases, unparseable and `v`-prefixed tags, renamed packages, repository `exclude`, and `require` formatting (`tests/parity-contract.sh`),
-- HTTPS credentials from `auth.json`, fallback to Git's own authentication, and a clear failure without credentials (`tests/auth-contract.sh`).
+- HTTPS authentication in Composer's order (Git's own first, then `auth.json`), the working method remembered per repository, and a clear failure without credentials (`tests/auth-contract.sh`).
 
 Run everything locally with `bash tests/ci.sh` (or `composer check`): PHPStan, unit tests and all contracts. CI calls the same script.
 

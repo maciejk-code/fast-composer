@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# HTTPS credentials: Fast Composer must use Composer's auth.json, fall back to Git's own
-# authentication when those are rejected, and fail clearly (never hang) without credentials.
+# HTTPS credentials, in Composer's order: Git's own authentication first, Composer's auth.json
+# only when that is refused; the method that worked is remembered per repository. Without
+# credentials, fail clearly (never hang).
 set -euo pipefail
 
 FC_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -11,6 +12,7 @@ cleanup() {
   rm -rf "$WORK"
 }
 trap cleanup EXIT
+[ -n "${AUTH_KEEP:-}" ] && trap - EXIT
 
 PORT="${AUTH_CONTRACT_PORT:-$((18700 + RANDOM % 200))}"
 export COMPOSER_HOME="$WORK/composer-home"
@@ -64,14 +66,26 @@ cmp -s composer.lock "$WORK/composer.lock" || { diff "$WORK/composer.lock" compo
 if grep -q 's3cret\|ZGVwbG95OnMzY3JldA' "$WORK/authjson.log"; then
   echo "REGRESSION: credential visible in logged command lines" >&2; exit 1
 fi
+grep -q 'retrying [0-9]* refused: [1-9][0-9]* with Composer credentials' "$WORK/authjson.log" || { cat "$WORK/authjson.log" >&2; echo "auth.json not used after Git's own authentication was refused" >&2; exit 1; }
 echo "auth-json-credentials: PASS"
 
-# 3. auth.json credentials rejected, Git's credential helper has the right ones: retried.
+# 2b. Second run: auth.json is remembered as the working method, no refused attempt first.
+FAST_COMPOSER_TTL=0 FAST_COMPOSER_CACHE_DIR="$WORK/cache-2" "${FC[@]}" update "${FLAGS[@]}" > "$WORK/authjson-2.log" 2>&1 || { cat "$WORK/authjson-2.log" >&2; exit 1; }
+if grep -q 'retrying' "$WORK/authjson-2.log"; then
+  cat "$WORK/authjson-2.log" >&2; echo "REGRESSION: working auth method not remembered" >&2; exit 1
+fi
+cmp -s composer.lock "$WORK/composer.lock" || { echo "lock differs from Composer on second run" >&2; exit 1; }
+echo "auth-method-remembered: PASS"
+
+# 3. Git's credential helper has the right credentials, auth.json wrong ones: like Composer, Git's
+#    own authentication is tried first, so the auth.json token is never needed or retried.
 printf '{"http-basic": {"127.0.0.1:%s": {"username": "deploy", "password": "wrong"}}}\n' "$PORT" > auth.json
 git config --global credential.helper '!f() { echo username=deploy; echo password=s3cret; }; f'
 rm -f composer.lock
 FAST_COMPOSER_CACHE_DIR="$WORK/cache-3" "${FC[@]}" update "${FLAGS[@]}" > "$WORK/retry.log" 2>&1 || { cat "$WORK/retry.log" >&2; echo "no fallback to Git's own authentication" >&2; exit 1; }
-grep -q 'retrying .* without Composer credentials' "$WORK/retry.log" || { echo "fallback path not taken" >&2; exit 1; }
-echo "auth-fallback-to-git-credentials: PASS"
+if grep -q 'retrying' "$WORK/retry.log"; then
+  cat "$WORK/retry.log" >&2; echo "REGRESSION: Composer credentials tried before Git's own authentication" >&2; exit 1
+fi
+echo "auth-git-credentials-first: PASS"
 
 echo "auth-contract: PASS"
