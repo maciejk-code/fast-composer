@@ -36,6 +36,12 @@
 - "Repository package name mismatch": a tag/branch whose `composer.json` has a different `name` (renamed package, fork, typo, different case) aborted the refresh. Like Composer, every version of a VCS repository now takes the name from its default branch. Lock validation accepts such a version only under exactly that name.
 - Branches/tags without a `composer.json` (e.g. `gh-pages`) are skipped like Composer does instead of failing the refresh.
 
+### Security
+
+- `secure-http` was not enforced: Fast Composer fetched `http://` and `git://` VCS repositories that Composer refuses by default, and could send `auth.json` credentials over plain HTTP. Every network Git command now passes Composer's own `Config::prohibitUrlByConfig()` first (same error as Composer).
+- The cache is refused when it is owned by another user or writable by everyone (its mirrors are Git directories whose config would run as you; its snapshots feed the solver). Without `HOME`, the cache is now `<tmp>/fast-composer-<uid>` instead of the shared `<tmp>/.cache/fast-composer`.
+- Credentials and `secure-http` set in the project's `composer.json` `config` section are now taken into account, like Composer's `Factory` does.
+
 ### Architecture
 
 - VCS package data is now produced by Composer's own `VcsRepository` running on a Fast Composer VCS driver (`MirrorDriver`) that reads the local mirror, instead of a re-implementation of Composer's rules. Everything about turning refs into packages is Composer's: version names and skipped tags, package name, `default-branch` (and its `9999999-dev` alias), branch aliases, release time. The ported version rules (`ComposerVersion`) are gone.

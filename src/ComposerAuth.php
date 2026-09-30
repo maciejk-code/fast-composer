@@ -1,12 +1,15 @@
 <?php
 namespace FastComposer;
 
+use Composer\Config;
 use Composer\Factory;
 use Composer\IO\NullIO;
 
 /**
- * Credentials Composer would use for an HTTPS VCS URL (auth.json of the project and of
- * COMPOSER_HOME, COMPOSER_AUTH), handed to Git the way Composer's Git utility shapes them.
+ * Composer's configuration for network access to VCS URLs: which URLs Composer allows at all
+ * (secure-http) and the credentials it would use (config of COMPOSER_HOME, the project's
+ * composer.json and auth.json, COMPOSER_AUTH), handed to Git the way Composer's Git utility
+ * shapes them.
  *
  * They are passed as an `Authorization` header through GIT_CONFIG_* environment variables:
  * never written to disk and, unlike Composer's user:password@host URLs, not visible in the
@@ -15,20 +18,36 @@ use Composer\IO\NullIO;
 final class ComposerAuth
 {
     private NullIO $io;
+    private Config $config;
 
-    public function __construct(string $projectDir)
+    /** @param array $rootConfig the project's decoded composer.json */
+    public function __construct(string $projectDir, array $rootConfig = [])
     {
         if (!InProcessComposer::loadClasses()) {
             throw new \RuntimeException('Composer classes are not available');
         }
         $this->io = new NullIO();
         $config = Factory::createConfig($this->io, $projectDir);
-        // Same as Composer's Factory: a project auth.json overrides the global credentials.
+        // Same order as Composer's Factory: the project's composer.json config, then its
+        // auth.json, override the global configuration.
+        $config->merge($rootConfig, $projectDir.'/composer.json');
         $localAuth = $projectDir.'/auth.json';
         if (is_file($localAuth)) {
             $config->merge(['config' => JsonFile::read($localAuth)], $localAuth);
         }
         $this->io->loadConfiguration($config);
+        $this->config = $config;
+    }
+
+    /**
+     * Refuse a URL Composer's configuration does not allow (secure-http: plain http:// and
+     * git:// URLs), exactly like Composer's Git utility does before any network Git command.
+     *
+     * @throws \RuntimeException
+     */
+    public function assertAllowed(string $url): void
+    {
+        $this->config->prohibitUrlByConfig($url);
     }
 
     /**

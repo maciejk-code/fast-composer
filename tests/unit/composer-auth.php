@@ -1,6 +1,7 @@
 <?php
 // HTTPS credentials come from Composer's own configuration (here COMPOSER_AUTH) and are shaped
-// like Composer's Git utility does, as an Authorization header in GIT_CONFIG_* variables.
+// like Composer's Git utility does, as an Authorization header in GIT_CONFIG_* variables. URLs
+// Composer's secure-http refuses are refused before any network access.
 use FastComposer\ComposerAuth;
 
 putenv('COMPOSER_HOME='.$base.'/composer-home');
@@ -25,6 +26,32 @@ try {
     fc_assert(
         ($auth->gitEnvironment('https://github.com/newsuk/private.git')['GIT_CONFIG_KEY_'.$index] ?? null) === 'http.https://github.com/.extraHeader',
         'header must be scoped to the host'
+    );
+
+    $refused = static function (ComposerAuth $auth, string $url): bool {
+        try {
+            $auth->assertAllowed($url);
+            return false;
+        } catch (\RuntimeException) {
+            return true;
+        }
+    };
+    fc_assert($refused($auth, 'http://git.example.com/repo.git'), 'secure-http refuses http://');
+    fc_assert($refused($auth, 'git://git.example.com/repo.git'), 'secure-http refuses git://');
+    fc_assert(!$refused($auth, 'https://git.example.com/repo.git'), 'https:// is allowed');
+    fc_assert(!$refused($auth, 'git@github.com:newsuk/private.git'), 'SSH URLs are allowed');
+    fc_assert(!$refused($auth, $base), 'local paths are allowed');
+
+    // Like Composer's Factory, the project's composer.json config counts: credentials there and
+    // secure-http turned off.
+    $project = new ComposerAuth($base, ['config' => [
+        'secure-http' => false,
+        'http-basic' => ['project.example.com' => ['username' => 'u', 'password' => 'p']],
+    ]]);
+    fc_assert(!$refused($project, 'http://git.example.com/repo.git'), 'secure-http false in composer.json allows http://');
+    fc_assert(
+        ($project->gitEnvironment('https://project.example.com/repo.git')['GIT_CONFIG_VALUE_'.$index] ?? null) === 'Authorization: Basic '.base64_encode('u:p'),
+        'credentials from composer.json config'
     );
 } finally {
     putenv('COMPOSER_AUTH');
