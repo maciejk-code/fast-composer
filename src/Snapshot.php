@@ -395,6 +395,8 @@ final class Snapshot
         if (PHP_OS_FAMILY === 'Windows' || !function_exists('posix_geteuid')) {
             return;
         }
+        // Always look at the directory as it is now, not at PHP's stat cache.
+        clearstatcache(true, $dir);
         $stat = @stat($dir);
         if ($stat === false) {
             throw new \RuntimeException("Cannot read Fast Composer cache directory $dir");
