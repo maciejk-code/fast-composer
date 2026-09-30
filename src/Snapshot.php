@@ -25,6 +25,7 @@ final class Snapshot
         $resolved = realpath($root);
         $this->root = $resolved !== false ? $resolved : rtrim($root, DIRECTORY_SEPARATOR);
         $baseDir = self::cacheBaseDir();
+        self::ensureTrustedCacheDir($baseDir);
         $this->cacheDir = $baseDir.'/projects/'.substr(hash('sha256', $this->root), 0, 24);
         $this->workStem = '.fast-composer-'.getmypid().'-'.bin2hex(random_bytes(4));
         $this->mirror = $mirror ?? new GitMirror($baseDir, $this->root);
@@ -381,6 +382,32 @@ final class Snapshot
     }
 
     /**
+     * Create the cache directory (private to the user) and refuse one another local user could
+     * write to. Its mirrors are Git directories (their config and hooks run as this user) and
+     * its snapshots feed the solver, so a writable-by-others cache would let that user plant
+     * code or package metadata.
+     */
+    private static function ensureTrustedCacheDir(string $dir): void
+    {
+        if (!is_dir($dir) && !@mkdir($dir, 0700, true) && !is_dir($dir)) {
+            throw new \RuntimeException("Cannot create Fast Composer cache directory $dir");
+        }
+        if (PHP_OS_FAMILY === 'Windows' || !function_exists('posix_geteuid')) {
+            return;
+        }
+        $stat = @stat($dir);
+        if ($stat === false) {
+            throw new \RuntimeException("Cannot read Fast Composer cache directory $dir");
+        }
+        if ($stat['uid'] !== posix_geteuid() || ($stat['mode'] & 0002) !== 0) {
+            throw new \RuntimeException(
+                "Refusing to use Fast Composer cache directory $dir: it is owned by another user or writable by everyone. "
+                .'Use a directory only you can write to (FAST_COMPOSER_CACHE_DIR), or fix its owner/permissions.'
+            );
+        }
+    }
+
+    /**
      * Deliberately outside Composer's cache-dir: `composer clear-cache` must not throw away
      * the snapshot and mirrors.
      */
@@ -400,7 +427,10 @@ final class Snapshot
 
         $home = getenv('HOME');
         if (!is_string($home) || trim($home) === '') {
-            $home = sys_get_temp_dir();
+            // No home directory (some CI/cron/container users): a per-user directory in the
+            // shared temp dir, never a name another user could have created first.
+            $user = function_exists('posix_geteuid') ? (string) posix_geteuid() : get_current_user();
+            return rtrim(sys_get_temp_dir(), '/\\').'/fast-composer-'.$user;
         }
         $home = rtrim($home, '/\\');
 

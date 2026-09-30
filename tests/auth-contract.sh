@@ -50,6 +50,18 @@ cat > "$ROOT/composer.json" <<JSON
 JSON
 cd "$ROOT"
 
+# 0. Composer's default secure-http refuses plain http:// URLs before any network access; so must
+#    Fast Composer (it once fetched them, sending auth.json credentials in cleartext).
+mkdir -p "$WORK/insecure"
+sed 's/"config": {"secure-http": false},//' composer.json > "$WORK/insecure/composer.json"
+printf '{"http-basic": {"127.0.0.1:%s": {"username": "deploy", "password": "s3cret"}}}\n' "$PORT" > "$WORK/insecure/auth.json"
+if (cd "$WORK/insecure" && FAST_COMPOSER_CACHE_DIR="$WORK/cache-0" timeout 60 "${FC[@]}" update "${FLAGS[@]}" > "$WORK/insecure.log" 2>&1); then
+  echo "REGRESSION: fast-composer fetched an http:// repository although secure-http is on" >&2; exit 1
+fi
+grep -q 'does not allow connections to http://127.0.0.1' "$WORK/insecure.log" || { cat "$WORK/insecure.log" >&2; echo "missing Composer's secure-http error" >&2; exit 1; }
+[ ! -e "$WORK/insecure/composer.lock" ] || { echo "REGRESSION: lock written for a refused URL" >&2; exit 1; }
+echo "auth-secure-http-refused: PASS"
+
 # 1. No credentials anywhere: a clear failure with a hint, no hang.
 if FAST_COMPOSER_CACHE_DIR="$WORK/cache-1" timeout 60 "${FC[@]}" update "${FLAGS[@]}" > "$WORK/none.log" 2>&1; then
   echo "REGRESSION: fast-composer succeeded without credentials" >&2; exit 1

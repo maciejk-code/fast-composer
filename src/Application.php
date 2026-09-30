@@ -43,13 +43,18 @@ final class Application
         $snapshot->setLogger(function (string $message): void {
             $this->log($message);
         });
-        // HTTPS VCS URLs get the same credentials Composer would use (auth.json, COMPOSER_AUTH).
-        $auth = null;
-        $snapshot->mirror()->setCredentials(static function (string $url) use (&$auth, $root): array {
-            if ($auth === null) {
-                $auth = ComposerPackages::available() ? new ComposerAuth($root) : false;
+        // Network Git follows Composer's configuration: URLs refused by secure-http are refused,
+        // HTTPS URLs get the credentials Composer would use (auth.json, COMPOSER_AUTH, config).
+        $composerConfig = null;
+        $config = static function () use (&$composerConfig, $root, $rootCfg): ?ComposerAuth {
+            if ($composerConfig === null) {
+                $composerConfig = ComposerPackages::available() ? new ComposerAuth($root, $rootCfg) : false;
             }
-            return $auth === false ? [] : $auth->gitEnvironment($url);
+            return $composerConfig ?: null;
+        };
+        $snapshot->mirror()->setCredentials(static fn (string $url): array => $config()?->gitEnvironment($url) ?? []);
+        $snapshot->mirror()->setUrlPolicy(static function (string $url) use ($config): void {
+            $config()?->assertAllowed($url);
         });
         // The in-process Composer solver may exit() directly; never leave work files behind.
         register_shutdown_function([$snapshot, 'cleanupWorkFiles']);

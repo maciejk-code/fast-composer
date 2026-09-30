@@ -25,6 +25,8 @@ final class GitMirror
     private $logger = null;
     /** @var null|callable(string):array<string,string> extra Git environment (credentials) per URL */
     private $credentials = null;
+    /** @var null|callable(string):void throws for a URL that must not be contacted */
+    private $urlPolicy = null;
 
     /**
      * @param string $baseDir cache base directory; mirrors live in $baseDir/mirrors
@@ -44,6 +46,12 @@ final class GitMirror
     public function setCredentials(callable $credentials): void
     {
         $this->credentials = $credentials;
+    }
+
+    /** @param callable(string):void $policy throws for a URL that must not be contacted (Composer's secure-http) */
+    public function setUrlPolicy(callable $policy): void
+    {
+        $this->urlPolicy = $policy;
     }
 
     /**
@@ -430,6 +438,9 @@ final class GitMirror
      */
     private function remote(string $url, array $command): array
     {
+        if ($this->urlPolicy !== null) {
+            ($this->urlPolicy)($url);
+        }
         $credentials = $this->credentials !== null ? ($this->credentials)($url) : [];
         if ($credentials === []) {
             return $command;
