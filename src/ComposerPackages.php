@@ -1,4 +1,5 @@
 <?php
+
 namespace FastComposer;
 
 use Composer\Factory;
@@ -27,6 +28,12 @@ final class ComposerPackages
         $this->io = new NullIO();
         $this->config = Factory::createConfig($this->io, $cwd);
         $this->httpDownloader = new HttpDownloader($this->io, $this->config);
+    }
+
+    /** Version of the Composer whose logic produced the package data. */
+    public static function composerVersion(): ?string
+    {
+        return self::available() ? \Composer\Composer::getVersion() : null;
     }
 
     public static function available(): bool

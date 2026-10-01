@@ -1,4 +1,5 @@
 <?php
+
 namespace FastComposer;
 
 final class GitUrl
@@ -13,9 +14,9 @@ final class GitUrl
         }
 
         if (preg_match('~(?:https?://|ssh://git@|git@)?github\.com[/:]([^/]+)/([^/]+?)(?:\.git)?/?$~i', $url, $m)) {
-            return 'github.com/'.strtolower($m[1]).'/'.strtolower(preg_replace('/\.git$/i', '', $m[2]));
+            return 'github.com/'.strtolower($m[1]).'/'.strtolower((string) preg_replace('/\.git$/i', '', $m[2]));
         }
 
-        return rtrim(preg_replace('/\.git$/i', '', $url), '/\\');
+        return rtrim((string) preg_replace('/\.git$/i', '', $url), '/\\');
     }
 }

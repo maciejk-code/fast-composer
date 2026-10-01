@@ -1,4 +1,5 @@
 <?php
+
 namespace FastComposer;
 
 /**
@@ -73,7 +74,7 @@ final class ComposerJson
             }
             foreach (['require', 'require-dev'] as $key) {
                 foreach (array_keys($before[$key] ?? []) as $package) {
-                    if (!isset($after[$key][$package]) && !$manipulator->removeSubNode($key, $package)) {
+                    if (!isset($after[$key][$package]) && !$manipulator->removeSubNode($key, (string) $package)) {
                         return null;
                     }
                 }
@@ -82,8 +83,10 @@ final class ComposerJson
                 }
             }
             $allowPlugins = $after['config']['allow-plugins'] ?? null;
-            if ($allowPlugins !== null && $allowPlugins !== ($before['config']['allow-plugins'] ?? null)
-                && !$manipulator->addConfigSetting('allow-plugins', $allowPlugins)) {
+            if (
+                $allowPlugins !== null && $allowPlugins !== ($before['config']['allow-plugins'] ?? null)
+                && !$manipulator->addConfigSetting('allow-plugins', $allowPlugins)
+            ) {
                 return null;
             }
             return $manipulator->getContents();

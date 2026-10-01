@@ -1,0 +1,12 @@
+parameters:
+    level: 8
+    paths:
+        - src
+        - bin
+    bootstrapFiles:
+        # Composer's own classes (JsonManipulator, VcsRepository, ...) come from the composer phar.
+        - tests/phpstan-bootstrap.php
+    ignoreErrors:
+        # composer.json/lock data is passed around as decoded JSON arrays; spelling out their
+        # shapes everywhere adds noise without catching bugs. Everything else at level 8 applies.
+        - identifier: missingType.iterableValue

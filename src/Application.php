@@ -1,4 +1,5 @@
 <?php
+
 namespace FastComposer;
 
 final class Application
@@ -13,6 +14,7 @@ final class Application
         fwrite(STDOUT, sprintf("[fast-composer %5.1fs] %s\n", microtime(true) - $this->startedAt, $message));
     }
 
+    /** @param list<string> $args */
     public function run(array $args): int
     {
         $cmd = $args[0] ?? 'help';
@@ -26,6 +28,10 @@ final class Application
         }
 
         $root = getcwd();
+        if ($root === false) {
+            fwrite(STDERR, "Cannot determine the current directory (was it deleted?)\n");
+            return 2;
+        }
         if (!is_file($root.'/composer.json')) {
             fwrite(STDERR, "composer.json not found\n");
             return 2;
@@ -42,6 +48,19 @@ final class Application
         $this->startedAt = microtime(true);
         $snapshot->setLogger(function (string $message): void {
             $this->log($message);
+        });
+        // Network Git follows Composer's configuration: URLs refused by secure-http are refused,
+        // HTTPS URLs get the credentials Composer would use (auth.json, COMPOSER_AUTH, config).
+        $composerConfig = null;
+        $config = static function () use (&$composerConfig, $root, $rootCfg): ?ComposerAuth {
+            if ($composerConfig === null) {
+                $composerConfig = ComposerPackages::available() ? new ComposerAuth($root, $rootCfg) : false;
+            }
+            return $composerConfig ?: null;
+        };
+        $snapshot->mirror()->setCredentials(static fn (string $url): array => $config()?->gitEnvironment($url) ?? []);
+        $snapshot->mirror()->setUrlPolicy(static function (string $url) use ($config): void {
+            $config()?->assertAllowed($url);
         });
         // The in-process Composer solver may exit() directly; never leave work files behind.
         register_shutdown_function([$snapshot, 'cleanupWorkFiles']);
@@ -75,7 +94,7 @@ final class Application
             if ($cmd === 'refresh') {
                 $this->log("rebuilding full VCS snapshot");
                 $this->log("this is the exhaustive path: it may read metadata for many refs; time depends on repository/ref count, Git/SSH latency and cache warmth");
-                $state = $snapshot->buildFromLockAndCache($rootCfg);
+                $state = $snapshot->rebuild($rootCfg);
                 printf(
                     "snapshot repos=%d versions=%d\n",
                     count($state['repos'] ?? []),
@@ -97,8 +116,10 @@ final class Application
 
             // These modes intentionally have semantics beyond an optimistic lock update. Preserve
             // exact Composer behavior rather than partially emulating them.
-            if (($cmd === 'require' && CommandLine::hasFlag($args, '--no-update'))
-                || ($cmd === 'update' && (CommandLine::hasFlag($args, '--lock') || CommandLine::hasFlag($args, '--bump-after-update')))) {
+            if (
+                ($cmd === 'require' && CommandLine::hasFlag($args, '--no-update'))
+                || ($cmd === 'update' && (CommandLine::hasFlag($args, '--lock') || CommandLine::hasFlag($args, '--bump-after-update')))
+            ) {
                 return $this->delegateComposer($args, $root);
             }
 
@@ -168,6 +189,7 @@ final class Application
         }
     }
 
+    /** @param list<string> $args */
     private function runFastComposer(Snapshot $snapshot, array &$state, array $rootCfg, array $args, string $root): int
     {
         $beforeLock = $snapshot->readLock();
@@ -405,6 +427,7 @@ final class Application
         return 0;
     }
 
+    /** @param list<string> $args */
     private function delegateComposer(array $args, string $root): int
     {
         [$code] = Process::run(array_merge(['composer'], $args), $root, true);
@@ -423,6 +446,7 @@ final class Application
         return (int) $value;
     }
 
+    /** @return resource */
     private function acquireOperationLock(Snapshot $snapshot)
     {
         if (!is_dir($snapshot->dir()) && !mkdir($snapshot->dir(), 0700, true) && !is_dir($snapshot->dir())) {

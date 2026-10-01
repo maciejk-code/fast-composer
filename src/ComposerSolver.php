@@ -1,4 +1,5 @@
 <?php
+
 namespace FastComposer;
 
 /** Runs Composer (the real solver) against the temporary root composer.json. */
