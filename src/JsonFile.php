@@ -1,4 +1,5 @@
 <?php
+
 namespace FastComposer;
 
 /** Reading, atomically writing and canonicalizing JSON data files. */

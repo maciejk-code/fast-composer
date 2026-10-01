@@ -1,4 +1,5 @@
 <?php
+
 namespace FastComposer;
 
 /** Interpreting the Composer-style arguments passed to fast-composer. */
@@ -14,7 +15,12 @@ final class CommandLine
         return false;
     }
 
-    /** Fast operations are lock-only. */
+    /**
+     * Fast operations are lock-only.
+     *
+     * @param list<string> $args
+     * @return list<string>
+     */
     public static function lockOnly(array $args): array
     {
         if (!self::hasFlag($args, '--no-install')) {
@@ -35,7 +41,7 @@ final class CommandLine
             if (!is_string($arg) || $arg === '' || str_starts_with($arg, '-')) {
                 continue;
             }
-            $name = preg_split('/[:= ]/', $arg, 2)[0];
+            $name = (preg_split('/[:= ]/', $arg, 2) ?: [''])[0];
             if (str_contains($name, '/')) {
                 $result[] = $arg;
             }
@@ -63,7 +69,7 @@ final class CommandLine
             return null;
         }
 
-        $token = preg_split('/\s+/', $constraint, 2)[0];
+        $token = (preg_split('/\s+/', $constraint, 2) ?: [''])[0];
         $token = preg_replace('/@[^@]+$/', '', $token);
         if (!is_string($token) || !str_starts_with($token, 'dev-') || strlen($token) <= 4) {
             return null;

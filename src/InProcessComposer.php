@@ -1,4 +1,5 @@
 <?php
+
 namespace FastComposer;
 
 /**
@@ -76,7 +77,8 @@ final class InProcessComposer
     /** Path of the Composer phar found on PATH, or null when in-process execution is not safe. */
     public static function composerPhar(): ?string
     {
-        if (getenv('FAST_COMPOSER_IN_PROCESS') === '0'
+        if (
+            getenv('FAST_COMPOSER_IN_PROCESS') === '0'
             || PHP_SAPI !== 'cli'
             || PHP_OS_FAMILY === 'Windows'
             || !extension_loaded('phar')

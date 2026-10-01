@@ -1,4 +1,5 @@
 <?php
+
 namespace FastComposer;
 
 final class LockFile
@@ -6,7 +7,7 @@ final class LockFile
     /** @return list<array> packages and packages-dev */
     public static function packages(array $lock): array
     {
-        return array_merge($lock['packages'] ?? [], $lock['packages-dev'] ?? []);
+        return array_values(array_merge($lock['packages'] ?? [], $lock['packages-dev'] ?? []));
     }
 
     /** @return array<string,array> */

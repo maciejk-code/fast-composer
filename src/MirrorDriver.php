@@ -1,4 +1,5 @@
 <?php
+
 namespace FastComposer;
 
 use Composer\Config;
