@@ -36,16 +36,26 @@
 - "Repository package name mismatch": a tag/branch whose `composer.json` has a different `name` (renamed package, fork, typo, different case) aborted the refresh. Like Composer, every version of a VCS repository now takes the name from its default branch. Lock validation accepts such a version only under exactly that name.
 - Branches/tags without a `composer.json` (e.g. `gh-pages`) are skipped like Composer does instead of failing the refresh.
 
+### Security
+
+- `secure-http` was not enforced: Fast Composer fetched `http://` and `git://` VCS repositories that Composer refuses by default, and could send `auth.json` credentials over plain HTTP. Every network Git command now passes Composer's own `Config::prohibitUrlByConfig()` first (same error as Composer).
+- The cache is refused when it is owned by another user or writable by everyone (its mirrors are Git directories whose config would run as you; its snapshots feed the solver). Without `HOME`, the cache is now `<tmp>/fast-composer-<uid>` instead of the shared `<tmp>/.cache/fast-composer`.
+- Fast Composer no longer looks for `/composer.json` when the current directory was deleted (`getcwd()` failure, found by PHPStan level 8); it stops with a clear error.
+- Credentials and `secure-http` set in the project's `composer.json` `config` section are now taken into account, like Composer's `Factory` does.
+
 ### Architecture
 
 - VCS package data is now produced by Composer's own `VcsRepository` running on a Fast Composer VCS driver (`MirrorDriver`) that reads the local mirror, instead of a re-implementation of Composer's rules. Everything about turning refs into packages is Composer's: version names and skipped tags, package name, `default-branch` (and its `9999999-dev` alias), branch aliases, release time. The ported version rules (`ComposerVersion`) are gone.
 - Each VCS repository becomes its own local `composer` repository in the same position with its `only` / `exclude` / `canonical` options, so repository priority and filters behave as in Composer.
 - The default branch is the remote HEAD (`git ls-remote --symref`, fetched in the same parallel batch and remembered per mirror; refreshed by `fast-composer refresh`). Composer asks the remote for it on every run.
 
+- HTTPS VCS repositories use the credentials Composer would use (`auth.json` of project and `COMPOSER_HOME`, `COMPOSER_AUTH`; GitHub/GitLab/Bitbucket/http-basic/bearer shaped like Composer's Git utility), passed to Git as an `Authorization` header via `GIT_CONFIG_*` environment variables — not on disk, not in the process list. Same order as Composer: Git's own authentication (SSH agent, credential helper) first, Composer's credentials only when that is refused, so a token is never sent where it is not needed. The method that worked is remembered per repository, so later runs do not repeat a refused attempt.
+
 ### Internal
 
 - Split the 1300-line `Snapshot` into `Snapshot` (state), `GitMirror` (all network Git access), `LockValidator` (safety contract) and small helpers (`RootConfig`, `LockFile`, `JsonFile`, `GitUrl`); moved solver invocation and argument parsing out of `Application` (`ComposerSolver`, `CommandLine`). No behavior change.
 - Unit tests split into `tests/unit/*.php`, each run in isolation by `tests/run.php`.
+- New end-to-end contracts: `tests/parity-contract.sh` (results byte-identical to plain Composer for every Composer behaviour Fast Composer once got wrong) and `tests/auth-contract.sh` (auth.json, fallback to Git credentials, clear failure). PHPStan level 8 (`phpstan.neon.dist`; decoded-JSON array value types are not required) and PHP_CodeSniffer (PSR-12 with concatenation written as `'a'.$b`, `phpcs.xml.dist`; `composer cs` / `composer cs:fix`). `composer check` runs the coding standard, static analysis, unit tests and all contracts.
 
 ### Benchmarks
 

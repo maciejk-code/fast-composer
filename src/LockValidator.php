@@ -1,4 +1,5 @@
 <?php
+
 namespace FastComposer;
 
 /**
@@ -89,8 +90,10 @@ final class LockValidator
             // A version may carry an old/other "name"; Composer then uses the name from the
             // repository's default branch. Accept exactly that, nothing else.
             $url = $lockedPackage['source']['url'] ?? null;
-            if (!is_string($url) || $lockedName === ''
-                || $lockedName !== strtolower($this->mirror->defaultBranchNames([$url])[$url])) {
+            if (
+                !is_string($url) || $lockedName === ''
+                || $lockedName !== strtolower($this->mirror->defaultBranchNames([$url])[$url])
+            ) {
                 return false;
             }
         }
