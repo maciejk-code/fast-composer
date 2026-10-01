@@ -1,4 +1,5 @@
 <?php
+
 namespace FastComposer;
 
 /** Questions about the root composer.json that several components need to answer the same way. */

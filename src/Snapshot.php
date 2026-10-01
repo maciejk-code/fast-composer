@@ -1,4 +1,5 @@
 <?php
+
 namespace FastComposer;
 
 /**
@@ -289,6 +290,7 @@ final class Snapshot
     }
 
     /** Every packages.json written by writeFastComposer(), for checks on the solver input. */
+    /** @return list<string> */
     public function repositoryFiles(): array
     {
         return glob($this->dir().'/repositories/*/packages.json') ?: [];
@@ -311,10 +313,12 @@ final class Snapshot
         $refs = $this->mirror->refs($url);
         $root = $this->mirror->defaultBranch($url);
         $previous = $snapshot['repos'][$url] ?? null;
-        if (is_array($previous) && isset($previous['packages'])
+        if (
+            is_array($previous) && isset($previous['packages'])
             && ($previous['refs'] ?? null) === $refs && ($previous['root'] ?? null) === $root
             && ($previous['config'] ?? null) === $repoConfig
-            && ($previous['composer'] ?? null) === ComposerPackages::composerVersion()) {
+            && ($previous['composer'] ?? null) === ComposerPackages::composerVersion()
+        ) {
             // Same refs, default branch, configuration and Composer version: Composer would derive exactly
             // the same packages (composer.json at a commit never changes). Only the check time moves.
             if ($checked) {

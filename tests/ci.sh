@@ -2,10 +2,11 @@
 # Single entry point for everything CI verifies. The workflow only calls this script, so what
 # CI checks can change here without touching .github/workflows.
 #
-# Usage: bash tests/ci.sh [all|unit|analyse|contracts|<contract name>...]
-#   all        (default) analyse + unit + contracts
+# Usage: bash tests/ci.sh [all|unit|analyse|cs|contracts|<contract name>...]
+#   all        (default) cs + analyse + unit + contracts
 #   unit       unit tests (tests/unit)
 #   analyse    PHPStan (skipped with a notice when phpstan is not installed)
+#   cs         coding standard, phpcs.xml.dist (skipped with a notice when not installed)
 #   contracts  every end-to-end contract listed in CONTRACTS below
 #   <name>     one contract, e.g. `parity` for tests/parity-contract.sh
 set -uo pipefail
@@ -53,6 +54,14 @@ run_analyse() {
   fi
 }
 
+run_cs() {
+  if [ -x vendor/bin/phpcs ]; then
+    step cs vendor/bin/phpcs
+  else
+    RESULTS+=("SKIP  cs (vendor/bin/phpcs not installed; run composer install)")
+  fi
+}
+
 run_contract() {
   local script
   script="$(contract_script "$1")"
@@ -72,9 +81,10 @@ run_contracts() {
 [ $# -eq 0 ] && set -- all
 for target in "$@"; do
   case "$target" in
-    all) run_analyse; run_unit; run_contracts ;;
+    all) run_cs; run_analyse; run_unit; run_contracts ;;
     unit) run_unit ;;
     analyse) run_analyse ;;
+    cs) run_cs ;;
     contracts) run_contracts ;;
     *) run_contract "$target" ;;
   esac

@@ -1,4 +1,5 @@
 <?php
+
 namespace FastComposer;
 
 /**
@@ -569,7 +570,7 @@ final class GitMirror
     private function runWithProgress(array $commands, callable $labelOf): array
     {
         return Process::runMany($commands, null, function (string $event, $subject, ?array $result, float $seconds, int $done, int $total) use ($labelOf): void {
-            if ($event === 'done') {
+            if ($event === 'done' && $result !== null) {
                 [$code, , $err] = $result;
                 $status = $code === 0 ? 'ok' : 'FAILED: '.strtok(trim($err) ?: 'exit '.$code, "\n");
                 $this->log(sprintf('  [%d/%d] %s %s (%.1fs)', $done, $total, $labelOf($subject), $status, $seconds));
@@ -611,21 +612,21 @@ final class GitMirror
         $result = [];
         $offset = 0;
         $length = strlen($out);
-        foreach ($specs as $i => $_) {
+        foreach ($specs as $_) {
             $eol = strpos($out, "\n", $offset);
             if ($eol === false) {
-                $result[$i] = null;
+                $result[] = null;
                 continue;
             }
             $header = substr($out, $offset, $eol - $offset);
             $offset = $eol + 1;
             if (!preg_match('/^([0-9a-f]{40,64}) (\S+) (\d+)$/', $header, $m)) {
                 // "<spec> missing" / "<spec> ambiguous": no object for this spec.
-                $result[$i] = null;
+                $result[] = null;
                 continue;
             }
             $size = (int) $m[3];
-            $result[$i] = ['oid' => $m[1], 'type' => $m[2], 'content' => (string) substr($out, $offset, $size)];
+            $result[] = ['oid' => $m[1], 'type' => $m[2], 'content' => (string) substr($out, $offset, $size)];
             $offset = min($length, $offset + $size + 1);
         }
         return $result;

@@ -1,9 +1,13 @@
 <?php
+
 namespace FastComposer;
 
 final class Process
 {
-    /** @return array{0:int,1:string,2:string} */
+    /**
+     * @param list<string> $args
+     * @return array{0:int,1:string,2:string}
+     */
     public static function run(array $args, ?string $cwd = null, bool $passthru = false): array
     {
         if ($args === []) {
@@ -131,7 +135,12 @@ final class Process
         return $ordered;
     }
 
-    /** Run a command and feed $input to its stdin. */
+    /**
+     * Run a command and feed $input to its stdin.
+     *
+     * @param list<string> $args
+     * @return array{0:int,1:string,2:string}
+     */
     public static function runWithInput(array $args, string $input, ?string $cwd = null): array
     {
         $process = proc_open($args, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $cwd);
@@ -205,6 +214,7 @@ final class Process
         return 8;
     }
 
+    /** @param list<string> $args */
     public static function must(array $args, ?string $cwd = null): string
     {
         [$code, $stdout, $stderr] = self::run($args, $cwd);

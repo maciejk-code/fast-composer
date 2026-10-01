@@ -40,6 +40,7 @@
 
 - `secure-http` was not enforced: Fast Composer fetched `http://` and `git://` VCS repositories that Composer refuses by default, and could send `auth.json` credentials over plain HTTP. Every network Git command now passes Composer's own `Config::prohibitUrlByConfig()` first (same error as Composer).
 - The cache is refused when it is owned by another user or writable by everyone (its mirrors are Git directories whose config would run as you; its snapshots feed the solver). Without `HOME`, the cache is now `<tmp>/fast-composer-<uid>` instead of the shared `<tmp>/.cache/fast-composer`.
+- Fast Composer no longer looks for `/composer.json` when the current directory was deleted (`getcwd()` failure, found by PHPStan level 8); it stops with a clear error.
 - Credentials and `secure-http` set in the project's `composer.json` `config` section are now taken into account, like Composer's `Factory` does.
 
 ### Architecture
@@ -54,7 +55,7 @@
 
 - Split the 1300-line `Snapshot` into `Snapshot` (state), `GitMirror` (all network Git access), `LockValidator` (safety contract) and small helpers (`RootConfig`, `LockFile`, `JsonFile`, `GitUrl`); moved solver invocation and argument parsing out of `Application` (`ComposerSolver`, `CommandLine`). No behavior change.
 - Unit tests split into `tests/unit/*.php`, each run in isolation by `tests/run.php`.
-- New end-to-end contracts: `tests/parity-contract.sh` (results byte-identical to plain Composer for every Composer behaviour Fast Composer once got wrong) and `tests/auth-contract.sh` (auth.json, fallback to Git credentials, clear failure). PHPStan level 5 (`phpstan.neon.dist`). `composer check` runs static analysis, unit tests and all contracts.
+- New end-to-end contracts: `tests/parity-contract.sh` (results byte-identical to plain Composer for every Composer behaviour Fast Composer once got wrong) and `tests/auth-contract.sh` (auth.json, fallback to Git credentials, clear failure). PHPStan level 8 (`phpstan.neon.dist`; decoded-JSON array value types are not required) and PHP_CodeSniffer (PSR-12 with concatenation written as `'a'.$b`, `phpcs.xml.dist`; `composer cs` / `composer cs:fix`). `composer check` runs the coding standard, static analysis, unit tests and all contracts.
 
 ### Benchmarks
 

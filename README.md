@@ -281,7 +281,7 @@ The repository maintains tests for:
 - byte-identical results to plain Composer for default branches, branch aliases, unparseable and `v`-prefixed tags, renamed packages, repository `exclude`, and `require` formatting (`tests/parity-contract.sh`),
 - HTTPS authentication in Composer's order (Git's own first, then `auth.json`), the working method remembered per repository, and a clear failure without credentials (`tests/auth-contract.sh`).
 
-Run everything locally with `bash tests/ci.sh` (or `composer check`): PHPStan, unit tests and all contracts. CI calls the same script.
+Run everything locally with `bash tests/ci.sh` (or `composer check`): coding standard (PHP_CodeSniffer, `phpcs.xml.dist`), PHPStan level 8, unit tests and all contracts. CI calls the same script.
 
 ## Code layout
 
