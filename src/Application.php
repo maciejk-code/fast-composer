@@ -195,7 +195,8 @@ final class Application
         $beforeLock = $snapshot->readLock();
         $fastLock = $snapshot->workLockPath();
 
-        for ($attempt = 0; $attempt < 2; $attempt++) {
+        $retried = false;
+        while (true) {
             // Recreate both temporary Composer files for every attempt. This matters for
             // `require`, because Composer edits its temporary composer.json during the solve.
             $fastComposer = $snapshot->writeFastComposer($rootCfg, $state);
@@ -208,7 +209,7 @@ final class Application
             }
 
             $this->log(
-                $attempt === 0
+                !$retried
                     ? "solving dependency graph with Composer from the cached snapshot (lock only; Composer's own output follows; its security audit queries packagist.org unless --no-audit)"
                     : 'retrying dependency graph solve after targeted VCS metadata repair'
             );
@@ -257,7 +258,7 @@ final class Application
                     $candidateRootCfg
                 );
             } catch (LockMetadataMismatch $mismatch) {
-                if ($attempt > 0) {
+                if ($retried) {
                     throw new \RuntimeException(
                         'Lock metadata still does not match source for '.$mismatch->package.' at '.$mismatch->reference
                         .' after targeted refresh; run `fast-composer refresh` or use standard Composer',
@@ -270,6 +271,7 @@ final class Application
                     'lock metadata mismatch for '.$mismatch->package.' at '.substr($mismatch->reference, 0, 12)
                     .'; refreshing only its VCS repository and retrying once'
                 );
+                $retried = true;
                 $snapshot->repairMetadata($state, $mismatch->sourceUrl, $candidateRootCfg);
                 continue;
             }
@@ -289,7 +291,6 @@ final class Application
             return 0;
         }
 
-        throw new \LogicException('Unreachable metadata repair state');
     }
 
     /**
