@@ -122,6 +122,21 @@ final class GitMirror
         return $errors;
     }
 
+    /**
+     * Force repositories to synchronize again during the current invocation.
+     *
+     * @param list<string> $urls
+     * @return array<string,string> error message per failed URL
+     */
+    public function resync(array $urls, bool $refreshDefaultBranch = false): array
+    {
+        foreach (array_values(array_unique($urls)) as $url) {
+            unset($this->synced[GitUrl::normalize($url)]);
+        }
+
+        return $this->sync($urls, $refreshDefaultBranch);
+    }
+
     public function isSynced(string $url): bool
     {
         return isset($this->synced[GitUrl::normalize($url)]);
