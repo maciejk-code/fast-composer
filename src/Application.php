@@ -193,58 +193,103 @@ final class Application
     private function runFastComposer(Snapshot $snapshot, array &$state, array $rootCfg, array $args, string $root): int
     {
         $beforeLock = $snapshot->readLock();
-        $fastComposer = $snapshot->writeFastComposer($rootCfg, $state);
         $fastLock = $snapshot->workLockPath();
 
-        if (is_file($root.'/composer.lock')) {
-            if (!copy($root.'/composer.lock', $fastLock)) {
-                throw new \RuntimeException('Cannot prepare temporary lock file');
+        for ($attempt = 0; $attempt < 2; $attempt++) {
+            // Recreate both temporary Composer files for every attempt. This matters for
+            // `require`, because Composer edits its temporary composer.json during the solve.
+            $fastComposer = $snapshot->writeFastComposer($rootCfg, $state);
+            if (is_file($root.'/composer.lock')) {
+                if (!copy($root.'/composer.lock', $fastLock)) {
+                    throw new \RuntimeException('Cannot prepare temporary lock file');
+                }
+            } elseif (is_file($fastLock)) {
+                unlink($fastLock);
             }
-        } elseif (is_file($fastLock)) {
-            unlink($fastLock);
-        }
 
-        $this->log("solving dependency graph with Composer from the cached snapshot (lock only; Composer's own output follows; its security audit queries packagist.org unless --no-audit)");
-        $solveStart = microtime(true);
-        $code = ComposerSolver::run($args, $root, $fastComposer, $rootCfg, $snapshot->repositoryFiles());
-        if ($code !== 0) {
-            return $code;
-        }
+            $this->log(
+                $attempt === 0
+                    ? "solving dependency graph with Composer from the cached snapshot (lock only; Composer's own output follows; its security audit queries packagist.org unless --no-audit)"
+                    : 'retrying dependency graph solve after targeted VCS metadata repair'
+            );
+            $solveStart = microtime(true);
+            $code = ComposerSolver::run($args, $root, $fastComposer, $rootCfg, $snapshot->repositoryFiles());
+            if ($code !== 0) {
+                return $code;
+            }
 
-        if (CommandLine::hasFlag($args, '--dry-run')) {
-            $this->log("dry-run; real composer files unchanged");
+            if (CommandLine::hasFlag($args, '--dry-run')) {
+                $this->log("dry-run; real composer files unchanged");
+                return 0;
+            }
+
+            if (!is_file($fastLock)) {
+                throw new \RuntimeException('Composer did not produce a lock file');
+            }
+
+            $newComposer = null;
+            $candidateRootCfg = $rootCfg;
+            if (($args[0] ?? null) === 'require') {
+                // Composer edited the temporary copy; apply the same edits to the real file text.
+                // Keep the original root config untouched until validation succeeds so a retry
+                // starts from exactly the same project state.
+                $temporaryRoot = JsonFile::read($fastComposer);
+                $original = (string) file_get_contents($root.'/composer.json');
+                $newComposer = ComposerJson::applyRequireChanges(
+                    $original,
+                    $rootCfg,
+                    $temporaryRoot,
+                    $this->sortPackages($args, $rootCfg)
+                );
+                $candidateRootCfg = JsonFile::decode($newComposer);
+            }
+
+            $this->log(sprintf(
+                "Composer solve finished (%.1fs); validating changed VCS packages against their exact locked SHA",
+                microtime(true) - $solveStart
+            ));
+            $afterLock = $snapshot->readLock($fastLock);
+
+            try {
+                (new LockValidator($snapshot->mirror()))->validateChanged(
+                    $beforeLock,
+                    $afterLock,
+                    $candidateRootCfg
+                );
+            } catch (LockMetadataMismatch $mismatch) {
+                if ($attempt > 0) {
+                    throw new \RuntimeException(
+                        'Lock metadata still does not match source for '.$mismatch->package.' at '.$mismatch->reference
+                        .' after targeted refresh; run `fast-composer refresh` or use standard Composer',
+                        0,
+                        $mismatch
+                    );
+                }
+
+                $this->log(
+                    'lock metadata mismatch for '.$mismatch->package.' at '.substr($mismatch->reference, 0, 12)
+                    .'; refreshing only its VCS repository and retrying once'
+                );
+                $snapshot->repairMetadata($state, $mismatch->sourceUrl, $candidateRootCfg);
+                continue;
+            }
+
+            LockFile::fixContentHash($fastLock, $candidateRootCfg);
+            $this->log("validation complete; publishing composer files");
+
+            $newLock = file_get_contents($fastLock);
+            if ($newLock === false) {
+                throw new \RuntimeException('Cannot read generated lock file');
+            }
+
+            $this->publishAtomically($root, $newComposer, $newLock);
+
+            $this->warnAboutUnapprovedPlugins($candidateRootCfg, $snapshot->readLock());
+            $this->log("lock verified and published; done");
             return 0;
         }
 
-        if (!is_file($fastLock)) {
-            throw new \RuntimeException('Composer did not produce a lock file');
-        }
-
-        $newComposer = null;
-        if (($args[0] ?? null) === 'require') {
-            // Composer edited the temporary copy; apply the same edits to the real file text.
-            $temporaryRoot = JsonFile::read($fastComposer);
-            $original = (string) file_get_contents($root.'/composer.json');
-            $newComposer = ComposerJson::applyRequireChanges($original, $rootCfg, $temporaryRoot, $this->sortPackages($args, $rootCfg));
-            $rootCfg = JsonFile::decode($newComposer);
-        }
-
-        $this->log(sprintf("Composer solve finished (%.1fs); validating changed VCS packages against their exact locked SHA", microtime(true) - $solveStart));
-        $afterLock = $snapshot->readLock($fastLock);
-        (new LockValidator($snapshot->mirror()))->validateChanged($beforeLock, $afterLock, $rootCfg);
-        LockFile::fixContentHash($fastLock, $rootCfg);
-        $this->log("validation complete; publishing composer files");
-
-        $newLock = file_get_contents($fastLock);
-        if ($newLock === false) {
-            throw new \RuntimeException('Cannot read generated lock file');
-        }
-
-        $this->publishAtomically($root, $newComposer, $newLock);
-
-        $this->warnAboutUnapprovedPlugins($rootCfg, $snapshot->readLock());
-        $this->log("lock verified and published; done");
-        return 0;
+        throw new \LogicException('Unreachable metadata repair state');
     }
 
     /**
