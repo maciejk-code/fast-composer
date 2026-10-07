@@ -58,13 +58,16 @@ $p=$argv[1];$sha=$argv[2];
 $s=json_decode(file_get_contents($p),true,512,JSON_THROW_ON_ERROR);
 $changed=0;
 foreach($s["repos"] as &$repo){
-  foreach(($repo["packages"]??[]) as &$pkg){
+  if(!isset($repo["packages"]) || !is_array($repo["packages"])) continue;
+  foreach($repo["packages"] as &$pkg){
     if(($pkg["name"]??null)==="acme/self-heal" && ($pkg["source"]["reference"]??null)===$sha){
       $pkg["extra"]["marker"]="stale-snapshot";
       $changed++;
     }
   }
+  unset($pkg);
 }
+unset($repo);
 if($changed===0) throw new RuntimeException("fixture package not found in snapshot");
 file_put_contents($p,json_encode($s,JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE|JSON_THROW_ON_ERROR)."\n");
 ' "$SNAPSHOT" "$SOURCE_SHA"
