@@ -24,6 +24,8 @@
 
 ### Fixed
 
+- A generated lock/source metadata mismatch now self-heals once: Fast Composer force-refreshes only the affected VCS repository, rebuilds its package metadata even when refs are unchanged, reruns the solver, and still fails hard if the mismatch persists.
+
 - Locks for packages on their repository's default branch lacked `"default-branch": true` (now produced by Composer itself).
 - Repository `exclude` / `only` / `canonical` options were ignored, so Fast Composer could lock a package Composer would refuse.
 
