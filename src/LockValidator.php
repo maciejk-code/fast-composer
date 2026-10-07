@@ -36,8 +36,10 @@ final class LockValidator
             $source = $package['source'];
             $meta = $this->mirror->composerAt($source['url'], $source['reference']);
             if (!$this->matches($package, $meta)) {
-                throw new \RuntimeException(
-                    "Lock metadata mismatch for $name at {$source['reference']}; refusing to write composer.lock"
+                throw new LockMetadataMismatch(
+                    $name,
+                    (string) $source['url'],
+                    (string) $source['reference']
                 );
             }
         }
