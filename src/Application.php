@@ -290,7 +290,6 @@ final class Application
             $this->log("lock verified and published; done");
             return 0;
         }
-
     }
 
     /**
