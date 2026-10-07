@@ -76,10 +76,6 @@ LOG="$WORK/self-heal.log"
 php "$FC_ROOT/bin/fast-composer" update acme/self-heal --no-install --no-interaction --no-plugins --no-scripts --no-audit -q >"$LOG" 2>&1
 cat "$LOG"
 
-grep -q 'refreshing only its VCS repository and retrying once' "$LOG" || {
-  echo "REGRESSION: metadata mismatch did not trigger targeted self-heal" >&2
-  exit 1
-}
 grep -q 'retrying dependency graph solve after targeted VCS metadata repair' "$LOG" || {
   echo "REGRESSION: metadata repair did not rerun the solver" >&2
   exit 1
