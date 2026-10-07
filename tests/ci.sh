@@ -15,7 +15,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 # End-to-end contracts against real Composer, in the order they run.
-CONTRACTS=(safety ci-verifier runtime parity auth global-install)
+CONTRACTS=(safety self-heal ci-verifier runtime parity auth global-install)
 
 contract_script() {
   case "$1" in

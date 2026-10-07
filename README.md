@@ -220,8 +220,9 @@ Because of that, Fast Composer performs a mandatory targeted source check before
 2. Fetch the exact locked commit SHA for those packages only.
 3. Read `composer.json` at that SHA.
 4. Compare source metadata with the generated lock entry.
-5. Refuse to replace the real `composer.lock` on mismatch or unreachable SHA.
-6. Write the lock `content-hash` for the real project `composer.json`, not the temporary Fast Composer configuration.
+5. On a metadata mismatch, force-refresh only that VCS repository, rebuild its package metadata and rerun the Composer solve once.
+6. Refuse to replace the real `composer.lock` if the mismatch persists after that retry, or if the locked SHA is unreachable.
+7. Write the lock `content-hash` for the real project `composer.json`, not the temporary Fast Composer configuration.
 
 This covers the class of metadata-corruption bugs that `composer install` alone does not catch while keeping the verification targeted.
 

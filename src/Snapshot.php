@@ -217,6 +217,30 @@ final class Snapshot
     }
 
     /**
+     * Re-fetch and rebuild one managed repository after source validation found stale metadata.
+     */
+    public function repairMetadata(array &$snapshot, string $sourceUrl, array $rootConfig): void
+    {
+        $url = RootConfig::managedUrlFor($sourceUrl, $rootConfig);
+        $declared = $this->declaredRepositories($rootConfig);
+        if ($url === null || !isset($declared[$url])) {
+            throw new \RuntimeException("No VCS repository mapping for $sourceUrl. Run fast-composer refresh.");
+        }
+
+        // Validation has already proved that the locked SHA is reachable. Re-sync the repository
+        // anyway so branch/tag tips and the remembered default branch cannot remain stale, then
+        // force package reconstruction even when those refs are byte-for-byte unchanged.
+        $errors = $this->mirror->resync([$url], true);
+        if (isset($errors[$url])) {
+            throw new \RuntimeException($errors[$url]);
+        }
+
+        $this->hydrate($snapshot, $declared[$url], true, true);
+        $snapshot['repo_config_hash'] = RootConfig::repositoriesHash($rootConfig);
+        $this->save($snapshot);
+    }
+
+    /**
      * Revalidate explicit development branches, fetching all of them concurrently. Only those
      * branches are refreshed, so the repositories' TTL clock is left alone.
      *
@@ -307,14 +331,14 @@ final class Snapshot
     }
 
     /** Rebuild a repository's packages from its mirror with Composer's VcsRepository. */
-    private function hydrate(array &$snapshot, array $repoConfig, bool $checked = true): void
+    private function hydrate(array &$snapshot, array $repoConfig, bool $checked = true, bool $force = false): void
     {
         $url = $repoConfig['url'];
         $refs = $this->mirror->refs($url);
         $root = $this->mirror->defaultBranch($url);
         $previous = $snapshot['repos'][$url] ?? null;
         if (
-            is_array($previous) && isset($previous['packages'])
+            !$force && is_array($previous) && isset($previous['packages'])
             && ($previous['refs'] ?? null) === $refs && ($previous['root'] ?? null) === $root
             && ($previous['config'] ?? null) === $repoConfig
             && ($previous['composer'] ?? null) === ComposerPackages::composerVersion()
