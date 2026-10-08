@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Opt-in `fast-composer install --skip-dirty-packages` keeps locally modified or unpublished Git source checkouts across **all Composer package types**, while installing other packages normally. It uses an ephemeral lock overlay, leaves the project lock untouched, refuses incompatible package metadata, and warns that the local vendor state may differ from the committed lock.
+
 ### Performance
 
 - VCS refresh uses a persistent shallow mirror per repository (in the Fast Composer cache): one `git fetch` both lists refs and downloads new tips, replacing the `ls-remote` + throw-away clone pair. The first fetch is `--depth=1`; later fetches are incremental.
