@@ -129,9 +129,12 @@ final class PreservedInstall
         if ($path === false || !is_dir($path)) {
             return null;
         }
-        [$code, $root] = Process::run(['git', '-C', $path, 'rev-parse', '--show-toplevel']);
+        [$code, $gitRoot, $error] = Process::run(['git', '-C', $path, 'rev-parse', '--show-toplevel']);
+        if ($code !== 0 && file_exists($path.'/.git')) {
+            throw new \RuntimeException('Cannot inspect Git checkout '.$path.': '.trim($error));
+        }
         // Do not protect a non-Git package merely because the project root is Git.
-        return $code === 0 && realpath(trim($root)) === $path ? $path : null;
+        return $code === 0 && realpath(trim($gitRoot)) === $path ? $path : null;
     }
 
     private function localChanges(string $path): ?string
