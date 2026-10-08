@@ -66,7 +66,7 @@ done
 composer update --no-install --no-interaction --no-plugins --no-scripts --no-audit -q
 before="$(sha256sum composer.lock | cut -d' ' -f1)"
 
-php "$FC_ROOT/bin/fast-composer" install --skip-dirty-packages --no-interaction --no-plugins --no-scripts --no-audit -q > "$WORK/install.log" 2>&1 || {
+php "$FC_ROOT/bin/fast-composer" install --skip-dirty-packages --no-interaction --no-plugins --no-scripts -q > "$WORK/install.log" 2>&1 || {
   cat "$WORK/install.log"
   exit 1
 }
@@ -90,7 +90,7 @@ $p="composer.lock";$l=json_decode(file_get_contents($p),true,512,JSON_THROW_ON_E
 foreach($l["packages"] as &$pkg){if($pkg["name"]==="acme/dirty-library"){$pkg["require"]["ext-zip"]="*";break;}}
 file_put_contents($p,json_encode($l,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES|JSON_THROW_ON_ERROR));
 '
-if php "$FC_ROOT/bin/fast-composer" install --skip-dirty-packages --no-interaction --no-plugins --no-scripts --no-audit -q > "$WORK/refused.log" 2>&1; then
+if php "$FC_ROOT/bin/fast-composer" install --skip-dirty-packages --no-interaction --no-plugins --no-scripts -q > "$WORK/refused.log" 2>&1; then
   echo 'expected metadata mismatch to fail closed' >&2
   exit 1
 fi
