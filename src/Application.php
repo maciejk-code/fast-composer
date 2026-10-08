@@ -557,7 +557,8 @@ final class Application
         echo "  fast-composer status\n";
         echo "  fast-composer install [--skip-dirty-packages] [composer options]\n";
         echo "  fast-composer --version\n\n";
-        echo "Fast update/require operations always imply --no-install.\n";        echo "Install normally delegates to Composer. --skip-dirty-packages preserves local Git source changes (all package types) when metadata is compatible.\n";
+        echo "Fast update/require operations always imply --no-install.\n";
+        echo "Install normally delegates to Composer. --skip-dirty-packages preserves local Git source changes (all package types) when metadata is compatible.\n";
         echo "The first run fetches every VCS repository in parallel into shared local mirrors; no regular Composer solve.\n";
         echo "FAST_COMPOSER_TTL controls broad full-update ref validation (default: 300 seconds).\n";
         echo "FAST_COMPOSER_CACHE_DIR overrides the Fast Composer cache base directory.\n";
