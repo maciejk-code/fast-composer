@@ -44,7 +44,10 @@ final class LockMetadataComparison
         }
 
         $expected = $dumper->dump($loader->load($source));
-        $actual = $dumper->dump($loader->load($locked));
+        // composer.lock is already Composer's serialized output. Re-loading a lock entry
+        // can reinterpret special constraints such as "self.version" in the absence of
+        // the original VCS version context. Compare to the actual published representation.
+        $actual = $locked;
 
         $wanted = array_fill_keys(self::FIELDS, true);
         $expected = JsonFile::canonical(array_intersect_key($expected, $wanted));
