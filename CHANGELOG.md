@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Reliability
+
+- VCS source/lock metadata validation uses Composer's ArrayLoader and ArrayDumper to normalize benign differences (empty fields, dependency-name casing, scalar `bin` values) without weakening exact-SHA source verification.
+- Metadata errors now show the differing field paths without printing potentially sensitive values. If a targeted metadata rebuild still disagrees, Fast Composer runs an isolated, lock-only standard Composer solve against the original VCS repositories, verifies its output, and only then publishes the real lock.
+
 ### Added
 
 - Opt-in `fast-composer install --skip-dirty-packages` keeps locally modified or unpublished Git source checkouts across **all Composer package types**, while installing other packages normally. It uses an ephemeral lock overlay, leaves the project lock untouched, refuses incompatible package metadata, and warns that the local vendor state may differ from the committed lock.

@@ -9,11 +9,6 @@ namespace FastComposer;
  */
 final class LockValidator
 {
-    private const VERIFY = [
-        'type', 'require', 'require-dev', 'conflict', 'replace', 'provide', 'suggest', 'autoload',
-        'include-path', 'target-dir', 'bin', 'extra',
-    ];
-
     public function __construct(private GitMirror $mirror)
     {
     }
@@ -35,11 +30,13 @@ final class LockValidator
         foreach ($changed as $name => $package) {
             $source = $package['source'];
             $meta = $this->mirror->composerAt($source['url'], $source['reference']);
-            if (!$this->matches($package, $meta)) {
+            $differences = $this->differences($package, $meta);
+            if ($differences !== []) {
                 throw new LockMetadataMismatch(
                     $name,
                     (string) $source['url'],
-                    (string) $source['reference']
+                    (string) $source['reference'],
+                    $differences
                 );
             }
         }
@@ -60,7 +57,7 @@ final class LockValidator
             $source = $package['source'];
             try {
                 $meta = $this->mirror->composerAt($source['url'], $source['reference']);
-                $results[$name] = ['sha' => $source['reference'], 'reachable' => true, 'metadata_match' => $this->matches($package, $meta)];
+                $results[$name] = ['sha' => $source['reference'], 'reachable' => true, 'metadata_match' => $this->differences($package, $meta) === []];
             } catch (\Throwable) {
                 $results[$name] = ['sha' => $source['reference'], 'reachable' => false, 'metadata_match' => false];
             }
@@ -85,31 +82,22 @@ final class LockValidator
         }
     }
 
-    private function matches(array $lockedPackage, array $sourceComposer): bool
+    /** @return list<string> metadata paths that differ */
+    private function differences(array $lockedPackage, array $sourceComposer): array
     {
         $lockedName = strtolower((string) ($lockedPackage['name'] ?? ''));
         if ($lockedName !== strtolower((string) ($sourceComposer['name'] ?? ''))) {
-            // A version may carry an old/other "name"; Composer then uses the name from the
-            // repository's default branch. Accept exactly that, nothing else.
+            // Historical tags may have an old package name. Composer uses the default
+            // branch name for those tags; do not weaken that existing exception.
             $url = $lockedPackage['source']['url'] ?? null;
             if (
                 !is_string($url) || $lockedName === ''
-                || $lockedName !== strtolower($this->mirror->defaultBranchNames([$url])[$url])
+                || $lockedName !== strtolower($this->mirror->defaultBranchNames([$url])[$url] ?? '')
             ) {
-                return false;
+                return ['name'];
             }
         }
-        return $this->comparable($lockedPackage) === $this->comparable($sourceComposer);
-    }
 
-    private function comparable(array $package): array
-    {
-        $result = ['type' => $package['type'] ?? 'library'];
-        foreach (self::VERIFY as $key) {
-            if ($key !== 'type' && array_key_exists($key, $package)) {
-                $result[$key] = $package[$key];
-            }
-        }
-        return JsonFile::canonical($result);
+        return LockMetadataComparison::differences($lockedPackage, $sourceComposer);
     }
 }
