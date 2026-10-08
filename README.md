@@ -70,7 +70,30 @@ CI stays unchanged:
 composer install
 ```
 
-`fast-composer install` deliberately delegates to standard Composer.
+`fast-composer install` delegates to standard Composer unless local checkout protection is explicitly enabled:
+
+```bash
+fast-composer install --skip-dirty-packages
+```
+
+This **local-development-only** option works with **all Composer package types** (including
+`wordpress-plugin`, `library`, and custom types). It detects installed Git **source** checkouts
+with uncommitted/untracked files or unpublished local branch commits. For each affected
+package it keeps the installed Git revision in an ephemeral Composer lock file while
+Composer installs the other packages normally. The real `composer.json` and `composer.lock`
+remain unchanged. Temporary files are deleted on completion.
+
+It deliberately **refuses to skip** when the locked package has a different version, type,
+source URL, dependency requirements or autoload/installer metadata; when a protected package
+was removed from the lock; or when `--no-dev` would remove a protected dev dependency.
+Clean detached-HEAD checkouts are not treated as unpublished branches. This mode supports
+source installs only, not `dist` archives. A custom `COMPOSER` manifest is unsupported.
+
+**The local installation can differ from `composer.lock` after a successful run.** This is
+intentional and always reported. Never use this flag for CI, production, or release builds.
+Once local work has been committed/pushed or backed up, run plain `composer install` to
+restore reproducibility. Composer plugins and scripts still run unless explicitly disabled
+by their own Composer options.
 
 ## First run
 
