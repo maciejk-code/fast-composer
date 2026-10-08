@@ -203,10 +203,22 @@ final class Application
         $fastLock = $snapshot->workLockPath();
 
         $retried = false;
+        $usingStandardComposer = false;
         while (true) {
             // Recreate both temporary Composer files for every attempt. This matters for
             // `require`, because Composer edits its temporary composer.json during the solve.
-            $fastComposer = $snapshot->writeFastComposer($rootCfg, $state);
+            if ($usingStandardComposer) {
+                // Last-resort solve against real VCS repositories, still on a temporary manifest
+                // and with --no-install: never write an unverified lock to the project.
+                $rawConfig = file_get_contents($root.'/composer.json');
+                if ($rawConfig === false) {
+                    throw new \RuntimeException('Cannot read original composer.json');
+                }
+                $fastComposer = $snapshot->workComposerPath();
+                JsonFile::atomicWrite($fastComposer, $rawConfig, true);
+            } else {
+                $fastComposer = $snapshot->writeFastComposer($rootCfg, $state);
+            }
             if (is_file($root.'/composer.lock')) {
                 if (!copy($root.'/composer.lock', $fastLock)) {
                     throw new \RuntimeException('Cannot prepare temporary lock file');
@@ -216,12 +228,20 @@ final class Application
             }
 
             $this->log(
-                !$retried
-                    ? "solving dependency graph with Composer from the cached snapshot (lock only; Composer's own output follows; its security audit queries packagist.org unless --no-audit)"
-                    : 'retrying dependency graph solve after targeted VCS metadata repair'
+                $usingStandardComposer
+                    ? 'retrying dependency graph solve with standard Composer VCS repositories (temporary lock; verification still required)'
+                    : (!$retried
+                        ? "solving dependency graph with Composer from the cached snapshot (lock only; Composer's own output follows; its security audit queries packagist.org unless --no-audit)"
+                        : 'retrying dependency graph solve after targeted VCS metadata repair')
             );
             $solveStart = microtime(true);
-            $code = ComposerSolver::run($args, $root, $fastComposer, $rootCfg, $snapshot->repositoryFiles());
+            $code = ComposerSolver::run(
+                $args,
+                $root,
+                $fastComposer,
+                $rootCfg,
+                $usingStandardComposer ? [] : $snapshot->repositoryFiles()
+            );
             if ($code !== 0) {
                 return $code;
             }
@@ -265,18 +285,24 @@ final class Application
                     $candidateRootCfg
                 );
             } catch (LockMetadataMismatch $mismatch) {
-                if ($retried) {
+                if ($usingStandardComposer) {
                     throw new \RuntimeException(
-                        'Lock metadata still does not match source for '.$mismatch->package.' at '.$mismatch->reference
-                        .' after targeted refresh; run `fast-composer refresh` or use standard Composer',
+                        'Metadata still differs after a standard Composer solve: '.$mismatch->getMessage(),
                         0,
                         $mismatch
                     );
                 }
+                if ($retried) {
+                    $this->log(
+                        'metadata still differs after targeted repair: '.$mismatch->getMessage()
+                        .'; trying standard Composer in isolation'
+                    );
+                    $usingStandardComposer = true;
+                    continue;
+                }
 
                 $this->log(
-                    'lock metadata mismatch for '.$mismatch->package.' at '.substr($mismatch->reference, 0, 12)
-                    .'; refreshing only its VCS repository and retrying once'
+                    $mismatch->getMessage().'; refreshing only its VCS repository and retrying once'
                 );
                 $retried = true;
                 $snapshot->repairMetadata($state, $mismatch->sourceUrl, $candidateRootCfg);
