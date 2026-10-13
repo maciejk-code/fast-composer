@@ -73,6 +73,28 @@ final class Application
                 return $this->status($snapshot, $rootCfg);
             }
 
+            if ($cmd === 'cache') {
+                if (($args[1] ?? null) !== 'warm' || array_diff(array_slice($args, 2), ['--force']) !== []) {
+                    fwrite(STDERR, "Usage: fast-composer cache warm [--force]\n");
+                    return 2;
+                }
+                $force = in_array('--force', array_slice($args, 2), true);
+                $state = $snapshot->load();
+                if (!$state || !$snapshot->isCompatible($state, $rootCfg)) {
+                    // Sync new VCS repositories only; never modify root composer files or vendor.
+                    $synced = $snapshot->sync($state, $rootCfg);
+                    $this->log(sprintf('synchronized %d new VCS repositories', $synced));
+                }
+                $count = $snapshot->refreshAllIfStale($state, $rootCfg, $this->ttl(), $force);
+                printf(
+                    "cache-warm repositories=%d refreshed=%d versions=%d\n",
+                    count($state['repos'] ?? []),
+                    $count,
+                    array_sum(array_map('count', Snapshot::versions($state)))
+                );
+                return 0;
+            }
+
             if ($cmd === 'verify') {
                 $bad = 0;
                 $validator = new LockValidator($snapshot->mirror());
@@ -579,6 +601,7 @@ final class Application
         echo "  fast-composer update [packages...] [composer options]\n";
         echo "  fast-composer require vendor/package:constraint [composer options]\n";
         echo "  fast-composer refresh\n";
+        echo "  fast-composer cache warm [--force]\n";
         echo "  fast-composer verify\n";
         echo "  fast-composer status\n";
         echo "  fast-composer install [--skip-dirty-packages] [composer options]\n";
@@ -587,6 +610,7 @@ final class Application
         echo "Install normally delegates to Composer. --skip-dirty-packages preserves local Git source changes (all package types) when metadata is compatible.\n";
         echo "The first run fetches every VCS repository in parallel into shared local mirrors; no regular Composer solve.\n";
         echo "FAST_COMPOSER_TTL controls broad full-update ref validation (default: 300 seconds).\n";
+        echo "Cache warming refreshes Fast Composer's VCS snapshot, not standard Composer's cache.\n";
         echo "FAST_COMPOSER_CACHE_DIR overrides the Fast Composer cache base directory.\n";
         echo "FAST_COMPOSER_JOBS limits concurrent Git network operations (default: 8).\n";
         echo "FAST_COMPOSER_IN_PROCESS=0 runs the Composer solver as a subprocess instead of in-process.\n";
