@@ -46,7 +46,7 @@ step() {
 
 run_unit() { step unit php tests/run.php; }
 
-run_shell_syntax() { step shell-syntax bash -n scripts/install-launchd-warm.sh tests/cache-warm-contract.sh; }
+run_shell_syntax() { step shell-syntax bash -c 'bash -n scripts/install-launchd-warm.sh && bash -n tests/cache-warm-contract.sh'; }
 
 run_analyse() {
   if [ -x vendor/bin/phpstan ]; then
@@ -76,6 +76,7 @@ run_contract() {
 }
 
 run_contracts() {
+  run_shell_syntax
   local name
   for name in "${CONTRACTS[@]}"; do run_contract "$name"; done
 }
@@ -83,7 +84,7 @@ run_contracts() {
 [ $# -eq 0 ] && set -- all
 for target in "$@"; do
   case "$target" in
-    all) run_shell_syntax; run_cs; run_analyse; run_unit; run_contracts ;;
+    all) run_cs; run_analyse; run_unit; run_contracts ;;
     unit) run_unit ;;
     analyse) run_analyse ;;
     cs) run_cs ;;
