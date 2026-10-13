@@ -223,8 +223,12 @@ final class Application
             }
 
             $code = $this->runFastComposer($snapshot, $state, $rootCfg, $solveArgs, $root);
-            if ($code !== 0 || !$installAfterUpdate || CommandLine::hasFlag($args, '--dry-run')
-                || CommandLine::hasFlag($args, '--no-install')) {
+            if (
+                $code !== 0
+                || !$installAfterUpdate
+                || CommandLine::hasFlag($args, '--dry-run')
+                || CommandLine::hasFlag($args, '--no-install')
+            ) {
                 return $code;
             }
 
@@ -567,13 +571,15 @@ final class Application
             '--optimize-autoloader', '-o', '--classmap-authoritative', '-a',
             '--apcu-autoloader', '--no-interaction', '-n', '--no-progress',
             '--no-cache', '--ignore-platform-reqs', '--no-autoloader',
-            '--quiet', '-q', '--ansi', '--no-ansi', '--no-audit', '-v', '-vv', '-vvv',
+            '--quiet', '-q', '--ansi', '--no-ansi', '-v', '-vv', '-vvv',
         ];
         $args = ['install'];
         foreach (array_slice($updateArgs, 1) as $option) {
-            if (in_array($option, $flags, true)
+            if (
+                in_array($option, $flags, true)
                 || str_starts_with($option, '--ignore-platform-req=')
-                || str_starts_with($option, '--apcu-autoloader-prefix=')) {
+                || str_starts_with($option, '--apcu-autoloader-prefix=')
+            ) {
                 $args[] = $option;
             }
         }
