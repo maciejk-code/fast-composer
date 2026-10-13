@@ -70,7 +70,9 @@ final class ComposerPlugin implements PluginInterface, EventSubscriberInterface
             $snapshot = new Snapshot($root);
             $state = $snapshot->load();
             $maxAge = $this->maximumAge();
-            if (!$state || !$snapshot->isCompatible($state, $config)
+            if (
+                !$state
+                || !$snapshot->isCompatible($state, $config)
                 || !$snapshot->isFresh($state, $maxAge)
             ) {
                 $this->debug('No compatible fresh VCS snapshot; using normal Composer');
@@ -87,14 +89,19 @@ final class ComposerPlugin implements PluginInterface, EventSubscriberInterface
                 }
                 $url = $repo['url'];
                 $record = $state['repos'][$url] ?? null;
-                if (!is_array($record) || ($record['managed'] ?? false) !== true
-                    || empty($record['checked_at']) || empty($record['packages'])
+                if (
+                    !is_array($record)
+                    || ($record['managed'] ?? false) !== true
+                    || empty($record['checked_at'])
+                    || empty($record['packages'])
                 ) {
                     $this->debug('Incomplete VCS snapshot; using normal Composer');
                     return;
                 }
                 foreach ($record['packages'] as $package) {
-                    if (!is_array($package) || !is_string($package['name'] ?? null)
+                    if (
+                        !is_array($package)
+                        || !is_string($package['name'] ?? null)
                         || !is_string($package['version'] ?? null)
                     ) {
                         $this->debug('Invalid VCS package metadata; using normal Composer');
