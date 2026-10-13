@@ -53,6 +53,12 @@ fast-composer status
 # explicitly rebuild/refetch the VCS snapshot
 fast-composer refresh
 
+# incrementally warm the Fast Composer cache without changing composer.lock or vendor/
+fast-composer cache warm
+
+# always fetch refs even if the normal 300-second TTL is not expired
+fast-composer cache warm --force
+
 # verify managed VCS entries already present in composer.lock
 fast-composer verify
 ```
@@ -103,6 +109,30 @@ If no compatible snapshot exists yet, Fast Composer does **not** run a regular C
 - **Changed `repositories`:** the snapshot is updated incrementally — only added repositories are synchronized, removed ones are dropped.
 - **`composer clear-cache`** does not touch Fast Composer's cache (see [Runtime behavior](#runtime-behavior)).
 
+## Background cache warming (macOS)
+
+The optional `cache warm` command synchronizes new VCS repositories on first use, then refreshes
+all configured VCS refs when `FAST_COMPOSER_TTL` expires. It does **not** run the Composer
+solver, modify composer.json/composer.lock, or install packages. It uses the same project
+and mirror locks as foreground Fast Composer operations. `--force` bypasses the TTL.
+
+To install an opt-in user-level job on macOS:
+
+```bash
+cd /path/to/fast-composer
+bash scripts/install-launchd-warm.sh /path/to/your/composer-project
+```
+
+It runs on login and approximately every 30 minutes while the Mac is awake. Each project gets
+its own launchd job. Non-interactive Git credentials must be available to launchd, including
+VPN-only remotes. Logs: `~/Library/Logs/dev.fast-composer.cache-warm.*.log`.
+The installer prints commands to inspect and uninstall the job.
+
+**Important:** Composer's own VCS cache is separate from `~/.cache/fast-composer`.
+This job speeds up later **Fast Composer** broad updates while the snapshot remains fresh,
+but does **not** accelerate a literal `composer update` that always re-queries VCS remotes.
+Targeted Fast Composer updates continue to revalidate the requested VCS repository so fresh
+tags and branch heads are not inadvertently hidden.
 ## Benchmarks
 
 `benchmarks/compare.sh` runs Composer and Fast Composer from the same warm state (Composer's VCS mirrors and metadata cache populated; Fast Composer's snapshot and mirrors populated) and reports the median of 5 runs, the number of network Git operations, and whether the lock file is **byte-identical** to the one Composer produced. Repositories are served by a local `git daemon`, so Composer takes its normal remote-VCS path (cached mirror + `git remote update`). A Git shim adds a fixed delay to every network Git operation.
