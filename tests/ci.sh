@@ -15,7 +15,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 # End-to-end contracts against real Composer, in the order they run.
-CONTRACTS=(safety self-heal metadata-normalization ci-verifier runtime cache-warm parity auth preserve-install global-install)
+CONTRACTS=(safety self-heal metadata-normalization ci-verifier runtime cache-warm composer-plugin parity auth preserve-install global-install)
 
 contract_script() {
   case "$1" in
@@ -46,7 +46,7 @@ step() {
 
 run_unit() { step unit php tests/run.php; }
 
-run_shell_syntax() { step shell-syntax bash -c 'bash -n scripts/install-launchd-warm.sh && bash -n tests/cache-warm-contract.sh'; }
+run_shell_syntax() { step shell-syntax bash -c 'bash -n scripts/install-launchd-warm.sh && bash -n tests/cache-warm-contract.sh && bash -n tests/composer-plugin-contract.sh'; }
 
 run_analyse() {
   if [ -x vendor/bin/phpstan ]; then
