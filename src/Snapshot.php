@@ -163,9 +163,9 @@ final class Snapshot
         return count($pending);
     }
 
-    public function refreshAllIfStale(array &$snapshot, array $rootConfig, int $ttl): int
+    public function refreshAllIfStale(array &$snapshot, array $rootConfig, int $ttl, bool $force = false): int
     {
-        if ($this->isFresh($snapshot, $ttl)) {
+        if (!$force && $this->isFresh($snapshot, $ttl)) {
             return 0;
         }
 
