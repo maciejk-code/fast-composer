@@ -59,6 +59,9 @@ fast-composer cache warm
 # always fetch refs even if the normal 300-second TTL is not expired
 fast-composer cache warm --force
 
+# opt-in: resolve using the local snapshot, then perform a standard Composer install
+fast-composer composer update company/package --no-scripts
+
 # verify managed VCS entries already present in composer.lock
 fast-composer verify
 ```
@@ -109,6 +112,30 @@ If no compatible snapshot exists yet, Fast Composer does **not** run a regular C
 - **Changed `repositories`:** the snapshot is updated incrementally — only added repositories are synchronized, removed ones are dropped.
 - **`composer clear-cache`** does not touch Fast Composer's cache (see [Runtime behavior](#runtime-behavior)).
 
+## Two-stage update and install
+
+`fast-composer composer update [packages...] [options]` is an opt-in developer workflow:
+
+1. Run the existing Fast Composer dependency solve from its cached snapshot, with lock-only
+   output and exact-SHA metadata validation before publishing `composer.lock`.
+2. After a successful solve, run a real `composer install` against that verified lock to
+   materialize `vendor/` without running another broad VCS dependency solve.
+
+`--dry-run` and `--no-install` skip the second phase. Relevant installation options
+(including `--no-dev`, `--no-scripts`, `--no-plugins`, source/dist preferences and platform
+ignores) are passed on to `composer install`.
+
+**Not semantically identical to `composer update`:** update lifecycle scripts do not run in
+the temporary solve; installation runs **install** lifecycle scripts. Avoid this mode if
+you rely on update-specific hooks, plugin-side effects, or unusual Composer options; use
+plain `composer update` in those cases. The standard Composer command is unchanged.
+
+Example:
+
+```bash
+fast-composer cache warm
+fast-composer composer update vendor/package --no-scripts --no-audit
+```
 ## Background cache warming (macOS)
 
 The optional `cache warm` command synchronizes new VCS repositories on first use, then refreshes
