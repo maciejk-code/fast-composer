@@ -112,6 +112,39 @@ If no compatible snapshot exists yet, Fast Composer does **not** run a regular C
 - **Changed `repositories`:** the snapshot is updated incrementally — only added repositories are synchronized, removed ones are dropped.
 - **`composer clear-cache`** does not touch Fast Composer's cache (see [Runtime behavior](#runtime-behavior)).
 
+## Accelerate ordinary `composer update` with an optional global plugin
+
+Fast Composer now also exposes a **global Composer plugin** (Composer 2.3+) that injects
+recently warmed VCS metadata into the **real** Composer repository manager before solving.
+Unlike `fast-composer composer update`, the unmodified `composer update` command remains in
+charge of solving, scripts, plugins and installing packages. No project `composer.json` changes.
+
+First, install Fast Composer globally and opt into its Composer plugin. The global Composer
+config must explicitly allow `maciejk-code/fast-composer` (do not do this for untrusted plugins):
+
+```bash
+composer global config allow-plugins.maciejk-code/fast-composer true
+composer global require maciejk-code/fast-composer:dev-main
+# From the project's composer.json directory:
+fast-composer cache warm --force
+FAST_COMPOSER_PLUGIN=1 composer update vendor/package
+```
+
+For regular daily use, set `FAST_COMPOSER_PLUGIN=1` in your interactive shell profile and
+install the optional macOS cache-warming launchd job documented below. The plugin uses a
+1800-second maximum snapshot age by default (`FAST_COMPOSER_PLUGIN_TTL` overrides this).
+When stale, incompatible, incomplete or otherwise unsafe, it does nothing and Composer
+uses the original VCS repositories. Run `-vvv` to see whether the snapshot was injected.
+
+**Safety and limits:** opt-in only; VCS repositories must form a leading contiguous block in
+`repositories`, with only `type` and `url` fields, with unique package names between VCS
+repositories. Normal Composer runs with `--no-plugins` do not activate the plugin. The plugin
+inserts a canonical `package` metadata repository ahead of the existing VCS repositories.
+Because this is an explicit cache, it can be up to the configured age behind new tags or
+mutable branch heads. For a guaranteed fresh VCS view, run `fast-composer cache warm --force`
+immediately before the update, or use standard `composer update` with the plugin disabled.
+Do not enable this optimization in production or CI until it has been validated for your
+repository layout. Package downloads still use real source/dist URLs.
 ## Two-stage update and install
 
 `fast-composer composer update [packages...] [options]` is an opt-in developer workflow:
