@@ -1,19 +1,37 @@
 {
   "name": "maciejk-code/fast-composer",
-  "description": "Local Composer VCS metadata accelerator for optimistic targeted lock-file updates",
-  "type": "library",
+  "description": "Local Composer VCS metadata accelerator with optional global Composer plugin",
+  "type": "composer-plugin",
   "license": "MIT",
-  "require": {"php": ">=8.2"},
-  "autoload": {"psr-4": {"FastComposer\\": "src/"}},
-  "require-dev": {"phpstan/phpstan": "^2.1", "squizlabs/php_codesniffer": "^4.0"},
-  "bin": ["bin/fast-composer"],
+  "require": {
+    "php": ">=8.2",
+    "composer-plugin-api": "^2.3"
+  },
+  "autoload": {
+    "psr-4": {
+      "FastComposer\\": "src/"
+    }
+  },
+  "require-dev": {
+    "phpstan/phpstan": "^2.1",
+    "squizlabs/php_codesniffer": "^4.0"
+  },
+  "bin": [
+    "bin/fast-composer"
+  ],
   "scripts": {
     "test": "php tests/run.php",
-    "test:contracts": ["Composer\\Config::disableProcessTimeout", "bash tests/ci.sh contracts"],
+    "test:contracts": [
+      "Composer\\Config::disableProcessTimeout",
+      "bash tests/ci.sh contracts"
+    ],
     "analyse": "phpstan analyse --no-progress",
     "cs": "phpcs",
     "cs:fix": "phpcbf",
-    "check": ["Composer\\Config::disableProcessTimeout", "bash tests/ci.sh all"]
+    "check": [
+      "Composer\\Config::disableProcessTimeout",
+      "bash tests/ci.sh all"
+    ]
   },
   "scripts-descriptions": {
     "test": "Unit tests (tests/unit, each file isolated)",
@@ -22,5 +40,9 @@
     "cs": "Coding standard check (PSR-12 with this codebase's conventions, phpcs.xml.dist)",
     "cs:fix": "Fix coding standard violations automatically",
     "check": "Everything CI runs: tests/ci.sh all"
+  },
+  "extra": {
+    "class": "FastComposer\\ComposerPlugin",
+    "plugin-optional": true
   }
 }
