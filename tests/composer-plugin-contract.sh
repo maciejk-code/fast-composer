@@ -77,6 +77,20 @@ if (($l["packages"][0]["version"] ?? null) !== "1.1.0") throw new RuntimeExcepti
 if (($l["packages"][0]["extra"]["marker"] ?? null) !== "two") throw new RuntimeException("new tag metadata not selected");
 '
 
+# Prove that a real Composer solve can use the warmed VCS metadata without
+# contacting the original VCS remote (not merely that a debug line was printed).
+mv "$WORK/repo" "$WORK/repo-temporarily-offline"
+FAST_COMPOSER_PLUGIN=1 composer update --no-install --no-interaction --no-audit --no-scripts -vvv > "$WORK/offline.log" 2>&1 || {
+  cat "$WORK/offline.log" >&2
+  exit 1
+}
+grep -q 'Injected.*locally cached VCS versions' "$WORK/offline.log"
+if grep -q 'git remote update' "$WORK/offline.log"; then
+  echo "warmed update still caused a remote VCS refresh" >&2
+  exit 1
+fi
+mv "$WORK/repo-temporarily-offline" "$WORK/repo"
+
 # If the cache is considered stale, the plugin must NOT inject it.
 FAST_COMPOSER_PLUGIN=1 FAST_COMPOSER_PLUGIN_TTL=0 composer update --no-interaction --no-audit --no-scripts --no-install -vvv > "$WORK/stale.log" 2>&1
 if grep -q 'Injected.*locally cached VCS versions' "$WORK/stale.log"; then
