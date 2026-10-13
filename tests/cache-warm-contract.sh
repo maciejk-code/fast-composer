@@ -81,6 +81,23 @@ throw new RuntimeException("update did not use the warmed tag");
 '
 test ! -e vendor
 
+# The opt-in two-stage command uses the verified fast lock, then materializes vendor.
+FAST_COMPOSER_TTL=999999 "${FC[@]}" composer update --no-interaction --no-plugins --no-scripts --no-audit -q > "$WORK/two-stage.log"
+test -f vendor/acme/cache-fixture/composer.json
+grep -q 'running standard composer install' "$WORK/two-stage.log"
+php -r '
+$l=json_decode(file_get_contents("composer.lock"),true,512,JSON_THROW_ON_ERROR);
+if ($l["packages"][0]["version"] !== "1.1.0") throw new RuntimeException("two-stage update changed version");
+'
+# A dry run must not invoke the installation phase.
+rm -rf vendor
+FAST_COMPOSER_TTL=999999 "${FC[@]}" composer update --dry-run --no-interaction --no-plugins --no-scripts --no-audit -q > "$WORK/dry-run.log"
+test ! -e vendor
+if grep -q 'running standard composer install' "$WORK/dry-run.log"; then
+  echo "dry-run must not install dependencies" >&2
+  exit 1
+fi
+
 if "${FC[@]}" cache warm --unknown > "$WORK/invalid.log" 2>&1; then
   echo "cache warm should reject unsupported flags" >&2
   exit 1
