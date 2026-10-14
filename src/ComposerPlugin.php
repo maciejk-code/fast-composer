@@ -145,8 +145,8 @@ final class ComposerPlugin implements PluginInterface, EventSubscriberInterface
      * Confirm remote branch/tag tips before injecting them, without running Composer's
      * full per-repository VCS scan. Never serve unverified data after a network error.
      *
-     * @param array<string,mixed> $state
-     * @param array<string,mixed> $config
+     * @param array $state
+     * @param array $config
      */
     private function strictRefresh(Snapshot $snapshot, array &$state, array $config): void
     {
