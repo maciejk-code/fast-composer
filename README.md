@@ -130,21 +130,41 @@ fast-composer cache warm --force
 FAST_COMPOSER_PLUGIN=1 composer update vendor/package
 ```
 
-For regular daily use, set `FAST_COMPOSER_PLUGIN=1` in your interactive shell profile and
-install the optional macOS cache-warming launchd job documented below. The plugin uses a
-1800-second maximum snapshot age by default (`FAST_COMPOSER_PLUGIN_TTL` overrides this).
-When stale, incompatible, incomplete or otherwise unsafe, it does nothing and Composer
-uses the original VCS repositories. Run `-vvv` to see whether the snapshot was injected.
+For daily use, set `FAST_COMPOSER_PLUGIN=1` in your interactive shell profile and
+optionally install the macOS cache-warming launchd job documented below.
 
-**Safety and limits:** opt-in only; VCS repositories must form a leading contiguous block in
-`repositories`, with only `type` and `url` fields, with unique package names between VCS
-repositories. Normal Composer runs with `--no-plugins` do not activate the plugin. The plugin
-inserts a canonical `package` metadata repository ahead of the existing VCS repositories.
-Because this is an explicit cache, it can be up to the configured age behind new tags or
-mutable branch heads. For a guaranteed fresh VCS view, run `fast-composer cache warm --force`
-immediately before the update, or use standard `composer update` with the plugin disabled.
-Do not enable this optimization in production or CI until it has been validated for your
-repository layout. Package downloads still use real source/dist URLs.
+### Metadata freshness policy
+
+**Default: `strict`**. On every normal `composer update`, the plugin concurrently executes
+`git ls-remote --symref` against all configured VCS remotes, compares branch/tag SHAs and
+the default branch with the snapshot, and fetches/reindexes **only changed repositories**.
+Unchanged repositories require no Git object transfer. If validation fails (credentials,
+network, unexpected refs, concurrent cache-warming job), it leaves the original Composer
+repositories in place and standard Composer runs normally. Thus strict mode does not silently
+accept outdated refs merely because the cache was warmed less than 30 minutes ago.
+
+Available modes (only when `FAST_COMPOSER_PLUGIN=1`):
+
+| Mode | Example | Freshness behavior |
+| --- | --- | --- |
+| `strict` (default) | `FAST_COMPOSER_PLUGIN_MODE=strict` | Check remote refs every update; fetch changes only |
+| `balanced` | `FAST_COMPOSER_PLUGIN_MODE=balanced` | Trust cached refs up to `FAST_COMPOSER_PLUGIN_TTL` seconds (default 1800) |
+| `offline` | `FAST_COMPOSER_PLUGIN_MODE=offline` | Trust the compatible snapshot without a remote ref check; stale by design |
+
+Use `-vvv` to see the remote verification result and how many VCS repositories changed.
+Strict checking occurs before dependency resolution and cannot completely remove the
+usual race between checking remote HEAD and downloading dependencies: branches can still
+move after the check. For critical releases, pin immutable commit SHAs or version tags.
+
+**Safety and limits:** opt-in only; VCS repositories must form a leading contiguous block
+in `repositories`, with only `type` and `url` fields, and unique package names between VCS
+repositories. Standard Composer with `--no-plugins` does not activate the plugin.
+The injected `package` repository is canonical and takes precedence over ordinary VCS
+repositories; for unsupported configurations the plugin does not inject it.
+In `balanced`/`offline`, newly published versions and mutable branches can be hidden by
+the cached snapshot. Prefer `strict` for normal development and keep standard Composer
+untouched in CI until tested against your real private VCS setup.
+Package downloads still use actual source/dist URLs.
 ## Two-stage update and install
 
 `fast-composer composer update [packages...] [options]` is an opt-in developer workflow:
