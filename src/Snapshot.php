@@ -210,7 +210,8 @@ final class Snapshot
             if (!is_array($previous) || !is_array($latest) || empty($previous['packages'])) {
                 throw new \RuntimeException('Incomplete VCS metadata for '.$url);
             }
-            if (($previous['refs'] ?? null) != $latest['refs']
+            if (
+                ($previous['refs'] ?? null) != $latest['refs']
                 || ($previous['root'] ?? null) !== $latest['root']
             ) {
                 $changed[] = $url;
