@@ -123,6 +123,74 @@ final class GitMirror
     }
 
     /**
+     * Read the current remote branch/tag tips (including annotated tag peeling and HEAD)
+     * without transferring Git objects. All repositories are checked in parallel.
+     *
+     * @param list<string> $urls
+     * @return array<string,array{refs:array{heads:array<string,string>,tags:array<string,string>},root:string}>
+     */
+    public function remoteRefs(array $urls): array
+    {
+        $commands = [];
+        foreach (array_values(array_unique($urls)) as $url) {
+            // Also ensure the mirror exists for the remembered authentication method.
+            $this->ensureMirror($url);
+            $commands[$url] = $this->remote($url, [
+                ['git', 'ls-remote', '--symref', '--', $url, 'HEAD', 'refs/heads/*', 'refs/tags/*'],
+                $this->cwd,
+            ]);
+        }
+
+        $results = $this->run(
+            $commands,
+            'checking remote VCS refs',
+            static fn ($url): string => (string) $url
+        );
+        $result = [];
+        foreach ($results as $url => [$code, $out, $err]) {
+            if ($code !== 0) {
+                throw new \RuntimeException(
+                    $this->gitError($err !== '' ? $err : $out, 'Cannot check remote refs for '.$url)
+                );
+            }
+            $heads = [];
+            $tags = [];
+            $peeled = [];
+            $root = 'master'; // Composer's fallback when remote HEAD lacks a symref.
+            foreach (preg_split('/\R/', trim($out)) ?: [] as $line) {
+                if (preg_match('/^ref: refs\/heads\/(\S+)\s+HEAD$/', $line, $m)) {
+                    $root = $m[1];
+                    continue;
+                }
+                if (!preg_match('/^([a-fA-F0-9]{40,64})\s+(\S+)$/', $line, $m)) {
+                    continue;
+                }
+                $ref = $m[2];
+                if (str_starts_with($ref, 'refs/heads/')) {
+                    $heads[substr($ref, strlen('refs/heads/'))] = $m[1];
+                } elseif (str_starts_with($ref, 'refs/tags/')) {
+                    $tag = substr($ref, strlen('refs/tags/'));
+                    if (str_ends_with($tag, '^{}')) {
+                        $peeled[substr($tag, 0, -3)] = $m[1];
+                    } else {
+                        $tags[$tag] = $m[1];
+                    }
+                }
+            }
+            foreach ($peeled as $tag => $sha) {
+                $tags[$tag] = $sha;
+            }
+            ksort($heads);
+            ksort($tags);
+            $result[$url] = [
+                'refs' => ['heads' => $heads, 'tags' => $tags],
+                'root' => $root,
+            ];
+        }
+        return $result;
+    }
+
+    /**
      * Force repositories to synchronize again during the current invocation.
      *
      * @param list<string> $urls
