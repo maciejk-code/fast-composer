@@ -13,7 +13,8 @@ use Composer\Plugin\PluginInterface;
  * Opt-in injection of warmed VCS metadata into the REAL Composer update command.
  *
  * Unlike the two-phase wrapper, Composer still owns the update solver, installation,
- * plugin events and update lifecycle scripts. If safety checks fail, it runs normally.
+ * plugin events and update lifecycle scripts. Strict mode verifies remote refs every time.
+ * If the safe snapshot path is unavailable, Composer runs normally.
  */
 final class ComposerPlugin implements PluginInterface, EventSubscriberInterface
 {
@@ -69,13 +70,20 @@ final class ComposerPlugin implements PluginInterface, EventSubscriberInterface
 
             $snapshot = new Snapshot($root);
             $state = $snapshot->load();
-            $maxAge = $this->maximumAge();
-            if (
-                !$state
-                || !$snapshot->isCompatible($state, $config)
-                || !$snapshot->isFresh($state, $maxAge)
-            ) {
-                $this->debug('No compatible fresh VCS snapshot; using normal Composer');
+            if (!$state || !$snapshot->isCompatible($state, $config)) {
+                $this->debug('No compatible VCS snapshot; using normal Composer');
+                return;
+            }
+
+            $mode = getenv('FAST_COMPOSER_PLUGIN_MODE') ?: 'strict';
+            if (!in_array($mode, ['strict', 'balanced', 'offline'], true)) {
+                $this->debug('Unknown FAST_COMPOSER_PLUGIN_MODE; using normal Composer');
+                return;
+            }
+            if ($mode === 'strict') {
+                $this->strictRefresh($snapshot, $state, $config);
+            } elseif ($mode === 'balanced' && !$snapshot->isFresh($state, $this->maximumAge())) {
+                $this->debug('Snapshot TTL expired; using normal Composer');
                 return;
             }
 
@@ -130,6 +138,45 @@ final class ComposerPlugin implements PluginInterface, EventSubscriberInterface
         } catch (\Throwable $e) {
             // Never interrupt a standard Composer operation due to unavailable optional cache.
             $this->debug('Snapshot unavailable ('.get_class($e).'); using normal Composer');
+        }
+    }
+
+    /**
+     * Confirm remote branch/tag tips before injecting them, without running Composer's
+     * full per-repository VCS scan. Never serve unverified data after a network error.
+     *
+     * @param array<string,mixed> $state
+     * @param array<string,mixed> $config
+     */
+    private function strictRefresh(Snapshot $snapshot, array &$state, array $config): void
+    {
+        // Avoid colliding with launchd cache warmers and foreground Fast Composer commands.
+        $handle = @fopen($snapshot->dir().'/operation.lock', 'c+');
+        if (!is_resource($handle)) {
+            throw new \RuntimeException('Cannot lock VCS snapshot for validation');
+        }
+        try {
+            if (!flock($handle, LOCK_EX | LOCK_NB)) {
+                throw new \RuntimeException('VCS snapshot is in use; falling back to Composer');
+            }
+            // Global Composer plugins run in-process: retain Composer's normal auth policy.
+            $auth = new ComposerAuth((string) getcwd(), $config);
+            $snapshot->mirror()->setCredentials(
+                static fn (string $url): array => $auth->gitEnvironment($url)
+            );
+            $snapshot->mirror()->setUrlPolicy(
+                static function (string $url) use ($auth): void {
+                    $auth->assertAllowed($url);
+                }
+            );
+            $changed = $snapshot->refreshChangedFromRemote($state, $config);
+            $this->debug(sprintf(
+                'Strict remote verification passed (%d repositories changed)',
+                $changed
+            ));
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
         }
     }
 
