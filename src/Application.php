@@ -18,6 +18,18 @@ final class Application
     public function run(array $args): int
     {
         $cmd = $args[0] ?? 'help';
+        // Opt-in: fast snapshot solve followed by standard install from the verified lock.
+        // This is not an exact replacement for Composer's update script lifecycle.
+        $installAfterUpdate = false;
+        if ($cmd === 'composer') {
+            if (($args[1] ?? null) !== 'update') {
+                fwrite(STDERR, "Usage: fast-composer composer update [packages...] [composer options]\n");
+                return 2;
+            }
+            $installAfterUpdate = true;
+            $args = array_slice($args, 1);
+            $cmd = 'update';
+        }
         if (in_array($cmd, ['help', '--help', '-h'], true)) {
             $this->help();
             return 0;
@@ -71,6 +83,28 @@ final class Application
 
             if ($cmd === 'status') {
                 return $this->status($snapshot, $rootCfg);
+            }
+
+            if ($cmd === 'cache') {
+                if (($args[1] ?? null) !== 'warm' || array_diff(array_slice($args, 2), ['--force']) !== []) {
+                    fwrite(STDERR, "Usage: fast-composer cache warm [--force]\n");
+                    return 2;
+                }
+                $force = in_array('--force', array_slice($args, 2), true);
+                $state = $snapshot->load();
+                if (!$state || !$snapshot->isCompatible($state, $rootCfg)) {
+                    // Sync new VCS repositories only; never modify root composer files or vendor.
+                    $synced = $snapshot->sync($state, $rootCfg);
+                    $this->log(sprintf('synchronized %d new VCS repositories', $synced));
+                }
+                $count = $snapshot->refreshAllIfStale($state, $rootCfg, $this->ttl(), $force);
+                printf(
+                    "cache-warm repositories=%d refreshed=%d versions=%d\n",
+                    count($state['repos'] ?? []),
+                    $count,
+                    array_sum(array_map('count', Snapshot::versions($state)))
+                );
+                return 0;
             }
 
             if ($cmd === 'verify') {
@@ -131,6 +165,11 @@ final class Application
             }
 
             $solveArgs = CommandLine::lockOnly($args);
+            if ($installAfterUpdate && !CommandLine::hasFlag($solveArgs, '--no-scripts')) {
+                // Running update hooks on a temporary composer.json would be surprising.
+                // The installation phase below runs ordinary install hooks instead.
+                $solveArgs[] = '--no-scripts';
+            }
             if (!ComposerPackages::available()) {
                 // Package data comes from Composer's own VcsRepository; without Composer's
                 // classes (non-phar installation) stay correct and run plain Composer.
@@ -183,7 +222,19 @@ final class Application
                 }
             }
 
-            return $this->runFastComposer($snapshot, $state, $rootCfg, $solveArgs, $root);
+            $code = $this->runFastComposer($snapshot, $state, $rootCfg, $solveArgs, $root);
+            if (
+                $code !== 0
+                || !$installAfterUpdate
+                || CommandLine::hasFlag($args, '--dry-run')
+                || CommandLine::hasFlag($args, '--no-install')
+            ) {
+                return $code;
+            }
+
+            $this->log('verified lock published; running standard composer install (no broad VCS solve)');
+            $this->log('NOTE: this two-stage workflow uses install hooks, not update hooks; use composer update for exact update lifecycle');
+            return $this->delegateComposer($this->installArguments($args), $root);
         } catch (\Throwable $e) {
             fwrite(STDERR, '[fast-composer] '.$e->getMessage()."\n");
             return 1;
@@ -505,6 +556,36 @@ final class Application
         return 0;
     }
 
+
+    /**
+     * Pass relevant options to the install phase. Update/solver-only flags have no
+     * meaning for install and must not be forwarded (e.g. -W or --minimal-changes).
+     *
+     * @param list<string> $updateArgs
+     * @return list<string>
+     */
+    private function installArguments(array $updateArgs): array
+    {
+        $flags = [
+            '--no-dev', '--no-scripts', '--no-plugins', '--prefer-source', '--prefer-dist',
+            '--optimize-autoloader', '-o', '--classmap-authoritative', '-a',
+            '--apcu-autoloader', '--no-interaction', '-n', '--no-progress',
+            '--no-cache', '--ignore-platform-reqs', '--no-autoloader',
+            '--quiet', '-q', '--ansi', '--no-ansi', '-v', '-vv', '-vvv',
+        ];
+        $args = ['install'];
+        foreach (array_slice($updateArgs, 1) as $option) {
+            if (
+                in_array($option, $flags, true)
+                || str_starts_with($option, '--ignore-platform-req=')
+                || str_starts_with($option, '--apcu-autoloader-prefix=')
+            ) {
+                $args[] = $option;
+            }
+        }
+        return $args;
+    }
+
     /** @param list<string> $args */
     private function delegateComposer(array $args, string $root): int
     {
@@ -577,16 +658,20 @@ final class Application
         echo 'fast-composer '.self::VERSION."\n\n";
         echo "Commands:\n";
         echo "  fast-composer update [packages...] [composer options]\n";
+        echo "  fast-composer composer update [packages...] [composer options]\n";
         echo "  fast-composer require vendor/package:constraint [composer options]\n";
         echo "  fast-composer refresh\n";
+        echo "  fast-composer cache warm [--force]\n";
         echo "  fast-composer verify\n";
         echo "  fast-composer status\n";
         echo "  fast-composer install [--skip-dirty-packages] [composer options]\n";
         echo "  fast-composer --version\n\n";
         echo "Fast update/require operations always imply --no-install.\n";
+        echo "The composer update subcommand follows a verified fast solve with a standard install (different script lifecycle).\n";
         echo "Install normally delegates to Composer. --skip-dirty-packages preserves local Git source changes (all package types) when metadata is compatible.\n";
         echo "The first run fetches every VCS repository in parallel into shared local mirrors; no regular Composer solve.\n";
         echo "FAST_COMPOSER_TTL controls broad full-update ref validation (default: 300 seconds).\n";
+        echo "Cache warming refreshes Fast Composer's VCS snapshot, not standard Composer's cache.\n";
         echo "FAST_COMPOSER_CACHE_DIR overrides the Fast Composer cache base directory.\n";
         echo "FAST_COMPOSER_JOBS limits concurrent Git network operations (default: 8).\n";
         echo "FAST_COMPOSER_IN_PROCESS=0 runs the Composer solver as a subprocess instead of in-process.\n";

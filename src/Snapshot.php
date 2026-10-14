@@ -163,9 +163,9 @@ final class Snapshot
         return count($pending);
     }
 
-    public function refreshAllIfStale(array &$snapshot, array $rootConfig, int $ttl): int
+    public function refreshAllIfStale(array &$snapshot, array $rootConfig, int $ttl, bool $force = false): int
     {
-        if ($this->isFresh($snapshot, $ttl)) {
+        if (!$force && $this->isFresh($snapshot, $ttl)) {
             return 0;
         }
 
@@ -184,6 +184,62 @@ final class Snapshot
         $snapshot['repo_config_hash'] = RootConfig::repositoriesHash($rootConfig);
         $this->save($snapshot);
         return count($urls);
+    }
+
+    /**
+     * Strictly revalidate every VCS repository against its remote before Composer solves.
+     * Check refs concurrently with ls-remote; download/index metadata only when refs or
+     * the default branch actually changed. A remote failure throws instead of using
+     * old metadata. Caller must hold the per-project operation lock.
+     *
+     * @return int number of VCS repositories whose refs changed
+     */
+    public function refreshChangedFromRemote(array &$snapshot, array $rootConfig): int
+    {
+        if (!$this->isCompatible($snapshot, $rootConfig)) {
+            throw new \RuntimeException('Cannot check incompatible VCS snapshot');
+        }
+
+        $declared = $this->declaredRepositories($rootConfig);
+        $urls = array_map('strval', array_keys($declared));
+        $remote = $this->mirror->remoteRefs($urls);
+        $changed = [];
+        foreach ($urls as $url) {
+            $previous = $snapshot['repos'][$url] ?? null;
+            $latest = $remote[$url] ?? null;
+            if (!is_array($previous) || !is_array($latest) || empty($previous['packages'])) {
+                throw new \RuntimeException('Incomplete VCS metadata for '.$url);
+            }
+            if (
+                ($previous['refs'] ?? null) != $latest['refs']
+                || ($previous['root'] ?? null) !== $latest['root']
+            ) {
+                $changed[] = $url;
+            }
+        }
+
+        if ($changed !== []) {
+            $errors = $this->mirror->resync($changed, true);
+            foreach ($changed as $url) {
+                if (isset($errors[$url])) {
+                    throw new \RuntimeException('Cannot refresh VCS repository '.$url.': '.$errors[$url]);
+                }
+                $this->hydrate($snapshot, $declared[$url]);
+                // Refuse a race/mismatch instead of mistakenly accepting old metadata.
+                $refs = $snapshot['repos'][$url]['refs'] ?? null;
+                $root = $snapshot['repos'][$url]['root'] ?? null;
+                if ($refs != $remote[$url]['refs'] || $root !== $remote[$url]['root']) {
+                    throw new \RuntimeException('Remote refs changed while refreshing '.$url);
+                }
+            }
+        }
+
+        $now = time();
+        foreach ($urls as $url) {
+            $snapshot['repos'][$url]['checked_at'] = $now;
+        }
+        $this->save($snapshot);
+        return count($changed);
     }
 
     /** @param list<string> $patterns package names or wildcards */

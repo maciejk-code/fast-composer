@@ -53,6 +53,15 @@ fast-composer status
 # explicitly rebuild/refetch the VCS snapshot
 fast-composer refresh
 
+# incrementally warm the Fast Composer cache without changing composer.lock or vendor/
+fast-composer cache warm
+
+# always fetch refs even if the normal 300-second TTL is not expired
+fast-composer cache warm --force
+
+# opt-in: resolve using the local snapshot, then perform a standard Composer install
+fast-composer composer update company/package --no-scripts
+
 # verify managed VCS entries already present in composer.lock
 fast-composer verify
 ```
@@ -103,6 +112,107 @@ If no compatible snapshot exists yet, Fast Composer does **not** run a regular C
 - **Changed `repositories`:** the snapshot is updated incrementally — only added repositories are synchronized, removed ones are dropped.
 - **`composer clear-cache`** does not touch Fast Composer's cache (see [Runtime behavior](#runtime-behavior)).
 
+## Accelerate ordinary `composer update` with an optional global plugin
+
+Fast Composer now also exposes a **global Composer plugin** (Composer 2.3+) that injects
+recently warmed VCS metadata into the **real** Composer repository manager before solving.
+Unlike `fast-composer composer update`, the unmodified `composer update` command remains in
+charge of solving, scripts, plugins and installing packages. No project `composer.json` changes.
+
+First, install Fast Composer globally and opt into its Composer plugin. The global Composer
+config must explicitly allow `maciejk-code/fast-composer` (do not do this for untrusted plugins):
+
+```bash
+composer global config allow-plugins.maciejk-code/fast-composer true
+composer global require maciejk-code/fast-composer:dev-main
+# From the project's composer.json directory:
+fast-composer cache warm --force
+FAST_COMPOSER_PLUGIN=1 composer update vendor/package
+```
+
+For daily use, set `FAST_COMPOSER_PLUGIN=1` in your interactive shell profile and
+optionally install the macOS cache-warming launchd job documented below.
+
+### Metadata freshness policy
+
+**Default: `strict`**. On every normal `composer update`, the plugin concurrently executes
+`git ls-remote --symref` against all configured VCS remotes, compares branch/tag SHAs and
+the default branch with the snapshot, and fetches/reindexes **only changed repositories**.
+Unchanged repositories require no Git object transfer. If validation fails (credentials,
+network, unexpected refs, concurrent cache-warming job), it leaves the original Composer
+repositories in place and standard Composer runs normally. Thus strict mode does not silently
+accept outdated refs merely because the cache was warmed less than 30 minutes ago.
+
+Available modes (only when `FAST_COMPOSER_PLUGIN=1`):
+
+| Mode | Example | Freshness behavior |
+| --- | --- | --- |
+| `strict` (default) | `FAST_COMPOSER_PLUGIN_MODE=strict` | Check remote refs every update; fetch changes only |
+| `balanced` | `FAST_COMPOSER_PLUGIN_MODE=balanced` | Trust cached refs up to `FAST_COMPOSER_PLUGIN_TTL` seconds (default 1800) |
+| `offline` | `FAST_COMPOSER_PLUGIN_MODE=offline` | Trust the compatible snapshot without a remote ref check; stale by design |
+
+Use `-vvv` to see the remote verification result and how many VCS repositories changed.
+Strict checking occurs before dependency resolution and cannot completely remove the
+usual race between checking remote HEAD and downloading dependencies: branches can still
+move after the check. For critical releases, pin immutable commit SHAs or version tags.
+
+**Safety and limits:** opt-in only; VCS repositories must form a leading contiguous block
+in `repositories`, with only `type` and `url` fields, and unique package names between VCS
+repositories. Standard Composer with `--no-plugins` does not activate the plugin.
+The injected `package` repository is canonical and takes precedence over ordinary VCS
+repositories; for unsupported configurations the plugin does not inject it.
+In `balanced`/`offline`, newly published versions and mutable branches can be hidden by
+the cached snapshot. Prefer `strict` for normal development and keep standard Composer
+untouched in CI until tested against your real private VCS setup.
+Package downloads still use actual source/dist URLs.
+## Two-stage update and install
+
+`fast-composer composer update [packages...] [options]` is an opt-in developer workflow:
+
+1. Run the existing Fast Composer dependency solve from its cached snapshot, with lock-only
+   output and exact-SHA metadata validation before publishing `composer.lock`.
+2. After a successful solve, run a real `composer install` against that verified lock to
+   materialize `vendor/` without running another broad VCS dependency solve.
+
+`--dry-run` and `--no-install` skip the second phase. Relevant installation options
+(including `--no-dev`, `--no-scripts`, `--no-plugins`, source/dist preferences and platform
+ignores) are passed on to `composer install`.
+
+**Not semantically identical to `composer update`:** update lifecycle scripts do not run in
+the temporary solve; installation runs **install** lifecycle scripts. Avoid this mode if
+you rely on update-specific hooks, plugin-side effects, or unusual Composer options; use
+plain `composer update` in those cases. The standard Composer command is unchanged.
+
+Example:
+
+```bash
+fast-composer cache warm
+fast-composer composer update vendor/package --no-scripts --no-audit
+```
+## Background cache warming (macOS)
+
+The optional `cache warm` command synchronizes new VCS repositories on first use, then refreshes
+all configured VCS refs when `FAST_COMPOSER_TTL` expires. It does **not** run the Composer
+solver, modify composer.json/composer.lock, or install packages. It uses the same project
+and mirror locks as foreground Fast Composer operations. `--force` bypasses the TTL.
+
+To install an opt-in user-level job on macOS:
+
+```bash
+cd /path/to/fast-composer
+bash scripts/install-launchd-warm.sh /path/to/your/composer-project
+```
+
+It runs on login and approximately every 30 minutes while the Mac is awake. Each project gets
+its own launchd job. Non-interactive Git credentials must be available to launchd, including
+VPN-only remotes. Logs: `~/Library/Logs/dev.fast-composer.cache-warm.*.log`.
+The installer prints commands to inspect and uninstall the job.
+
+**Important:** Composer's own VCS cache is separate from `~/.cache/fast-composer`.
+This job speeds up later **Fast Composer** broad updates while the snapshot remains fresh,
+but does **not** accelerate a literal `composer update` that always re-queries VCS remotes.
+Targeted Fast Composer updates continue to revalidate the requested VCS repository so fresh
+tags and branch heads are not inadvertently hidden.
 ## Benchmarks
 
 `benchmarks/compare.sh` runs Composer and Fast Composer from the same warm state (Composer's VCS mirrors and metadata cache populated; Fast Composer's snapshot and mirrors populated) and reports the median of 5 runs, the number of network Git operations, and whether the lock file is **byte-identical** to the one Composer produced. Repositories are served by a local `git daemon`, so Composer takes its normal remote-VCS path (cached mirror + `git remote update`). A Git shim adds a fixed delay to every network Git operation.
