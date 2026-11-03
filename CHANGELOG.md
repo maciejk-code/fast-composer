@@ -4,6 +4,10 @@
 
 ### Reliability
 
+- `composer.lock` content-hash now comes from Composer's own Locker, including Composer 2.11 `config.policy`, instead of duplicating its hashing rules.
+- Cached VCS package metadata is regenerated from existing local mirrors when the Composer version changes, without a network refetch.
+- CI checks both Composer 2.10 and the latest stable Composer 2, with byte-for-byte lockfile parity coverage for `config.policy` on 2.11+.
+
 - VCS source/lock metadata validation uses Composer's ArrayLoader and ArrayDumper to normalize benign differences (empty fields, dependency-name casing, scalar `bin` values) without weakening exact-SHA source verification.
 - Metadata errors now show the differing field paths without printing potentially sensitive values. If a targeted metadata rebuild still disagrees, Fast Composer runs an isolated, lock-only standard Composer solve against the original VCS repositories, verifies its output, and only then publishes the real lock.
 
