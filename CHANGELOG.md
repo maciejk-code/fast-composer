@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Experimental breaking simplification
+
+- Remove `fast-composer install --skip-dirty-packages` and its ephemeral lock overlay. Plain `fast-composer install` still delegates to Composer, while the removed flag now fails explicitly to protect local work. This saves substantial code but **removes an opt-in local development feature**; evaluate before merging.
+
 ### Reliability
 
 - VCS source/lock metadata validation uses Composer's ArrayLoader and ArrayDumper to normalize benign differences (empty fields, dependency-name casing, scalar `bin` values) without weakening exact-SHA source verification.
