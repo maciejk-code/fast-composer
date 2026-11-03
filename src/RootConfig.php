@@ -58,24 +58,4 @@ final class RootConfig
         usort($repos, static fn (array $a, array $b): int => ($a['url'] ?? '') <=> ($b['url'] ?? ''));
         return hash('sha256', json_encode($repos, JSON_THROW_ON_ERROR));
     }
-
-    /** Composer's lock "content-hash" for this root configuration. */
-    public static function contentHash(array $rootConfig): string
-    {
-        $relevantKeys = [
-            'name', 'version', 'require', 'require-dev', 'conflict', 'replace', 'provide',
-            'minimum-stability', 'prefer-stable', 'repositories', 'extra',
-        ];
-
-        $relevant = [];
-        foreach (array_intersect($relevantKeys, array_keys($rootConfig)) as $key) {
-            $relevant[$key] = $rootConfig[$key];
-        }
-        if (isset($rootConfig['config']['platform'])) {
-            $relevant['config']['platform'] = $rootConfig['config']['platform'];
-        }
-        ksort($relevant);
-
-        return hash('md5', json_encode($relevant, JSON_THROW_ON_ERROR));
-    }
 }
