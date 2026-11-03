@@ -179,7 +179,6 @@ Every line is prefixed with the time since the command started, e.g. `[fast-comp
 ## Performance tuning
 
 - `FAST_COMPOSER_JOBS` (default 8): concurrent network Git operations for the first-run sync, broad refreshes, dev-branch revalidation and `verify`.
-- `FAST_COMPOSER_IN_PROCESS=0`: run the Composer solver as a subprocess. By default it runs in-process when `composer` on `PATH` is a regular Composer phar and Xdebug is not loaded.
 - Fast Composer keeps a shallow Git mirror per VCS repository under its cache directory; `fast-composer update` refreshes it with a single `git fetch`.
 
 ## What gets refreshed
@@ -319,7 +318,7 @@ Run everything locally with `bash tests/ci.sh` (or `composer check`): coding sta
 | `ComposerPackages`, `MirrorDriver` | Package data is produced by **Composer's own `VcsRepository`**, reading from the local mirror through a Composer VCS driver — version names, skipped tags, package names, `default-branch`, aliases and release dates are Composer's logic |
 | `GitMirror` | All network Git access: shared shallow mirrors, parallel fetches with progress, locks, `cat-file` reads, reachability proven during this run |
 | `LockValidator` | Safety contract: changed/locked VCS packages must match `composer.json` at their exact SHA |
-| `ComposerSolver`, `InProcessComposer` | Running the real Composer solver (in-process when possible) |
+| `ComposerSolver`, `InProcessComposer` | Running Composer's CLI solver and loading Composer metadata classes |
 | `RootConfig`, `LockFile`, `CommandLine` | Reading the root config, the lock file and command-line arguments |
 | `JsonFile`, `ComposerJson`, `GitUrl`, `Process` | Low-level helpers |
 
