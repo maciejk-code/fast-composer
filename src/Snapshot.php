@@ -168,7 +168,7 @@ final class Snapshot
         if ($this->isFresh($snapshot, $ttl)) {
             return 0;
         }
-        return $this->refreshRepositories($snapshot, array_keys($this->declaredRepositories($rootConfig)), $rootConfig);
+        return $this->refreshRepositories($snapshot, array_map('strval', array_keys($this->declaredRepositories($rootConfig))), $rootConfig);
     }
 
     /** @param list<string> $patterns package names or wildcards */
