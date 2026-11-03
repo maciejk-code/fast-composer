@@ -13,32 +13,15 @@ final class Process
         if ($args === []) {
             throw new \InvalidArgumentException('Process command cannot be empty');
         }
-
-        if ($passthru) {
-            $spec = [0 => STDIN, 1 => STDOUT, 2 => STDERR];
-            $process = proc_open($args, $spec, $pipes, $cwd);
-            if (!is_resource($process)) {
-                throw new \RuntimeException('Cannot start process: '.self::display($args));
-            }
-
-            return [proc_close($process), '', ''];
+        if (!$passthru) {
+            return self::capture($args, null, $cwd);
         }
 
-        $spec = [0 => STDIN, 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
-        $start = microtime(true);
-        $process = proc_open($args, $spec, $pipes, $cwd);
+        $process = proc_open($args, [0 => STDIN, 1 => STDOUT, 2 => STDERR], $pipes, $cwd);
         if (!is_resource($process)) {
             throw new \RuntimeException('Cannot start process: '.self::display($args));
         }
-
-        $stdout = stream_get_contents($pipes[1]);
-        $stderr = stream_get_contents($pipes[2]);
-        fclose($pipes[1]);
-        fclose($pipes[2]);
-
-        $code = proc_close($process);
-        self::debug($args, $code, microtime(true) - $start);
-        return [$code, $stdout === false ? '' : $stdout, $stderr === false ? '' : $stderr];
+        return [proc_close($process), '', ''];
     }
 
     /**
@@ -143,56 +126,72 @@ final class Process
      */
     public static function runWithInput(array $args, string $input, ?string $cwd = null): array
     {
-        $process = proc_open($args, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $cwd);
+        return self::capture($args, $input, $cwd);
+    }
+
+    /**
+     * Drain both output pipes while optionally writing stdin, avoiding pipe deadlocks.
+     * Null input inherits the caller's stdin; an empty string closes the child's stdin.
+     *
+     * @param list<string> $args
+     * @return array{0:int,1:string,2:string}
+     */
+    private static function capture(array $args, ?string $input, ?string $cwd): array
+    {
+        if ($args === []) {
+            throw new \InvalidArgumentException('Process command cannot be empty');
+        }
+
+        $spec = [0 => $input === null ? STDIN : ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+        $start = microtime(true);
+        $process = proc_open($args, $spec, $pipes, $cwd);
         if (!is_resource($process)) {
             throw new \RuntimeException('Cannot start process: '.self::display($args));
         }
 
-        // Write stdin while draining stdout/stderr so large outputs cannot deadlock the pipes.
-        stream_set_blocking($pipes[0], false);
-        stream_set_blocking($pipes[1], false);
-        stream_set_blocking($pipes[2], false);
-        $out = [1 => '', 2 => ''];
-        $open = [1 => $pipes[1], 2 => $pipes[2]];
-        $stdin = $input === '' ? null : $pipes[0];
-        if ($stdin === null) {
-            fclose($pipes[0]);
+        $stdin = $input === null ? null : $pipes[0];
+        if ($stdin !== null) {
+            stream_set_blocking($stdin, false);
+            if ($input === '') {
+                fclose($stdin);
+                $stdin = null;
+            }
+        }
+        $outputs = [1 => $pipes[1], 2 => $pipes[2]];
+        $buffer = [1 => '', 2 => ''];
+        foreach ($outputs as $pipe) {
+            stream_set_blocking($pipe, false);
         }
 
-        while ($open !== [] || $stdin !== null) {
-            $read = array_values($open);
+        while ($outputs !== [] || $stdin !== null) {
+            $read = array_values($outputs);
             $write = $stdin !== null ? [$stdin] : [];
             $except = null;
             @stream_select($read, $write, $except, 1);
 
-            // stream_select() reduces $write to the streams that are ready.
             if ($stdin !== null && in_array($stdin, $write, true)) {
-                $written = fwrite($stdin, $input);
-                if ($written === false) {
-                    $input = '';
-                } else {
-                    $input = (string) substr($input, $written);
-                }
+                $written = @fwrite($stdin, $input);
+                $input = $written === false ? '' : (string) substr($input, $written);
                 if ($input === '') {
                     fclose($stdin);
                     $stdin = null;
                 }
             }
-            foreach ($open as $fd => $pipe) {
+            foreach ($outputs as $fd => $pipe) {
                 $chunk = stream_get_contents($pipe);
                 if (is_string($chunk) && $chunk !== '') {
-                    $out[$fd] .= $chunk;
+                    $buffer[$fd] .= $chunk;
                 }
                 if (feof($pipe)) {
                     fclose($pipe);
-                    unset($open[$fd]);
+                    unset($outputs[$fd]);
                 }
             }
         }
 
         $code = proc_close($process);
-        self::debug($args, $code, 0.0);
-        return [$code, $out[1], $out[2]];
+        self::debug($args, $code, microtime(true) - $start);
+        return [$code, $buffer[1], $buffer[2]];
     }
 
     private const HEARTBEAT_SECONDS = 5;
