@@ -26,7 +26,7 @@ See the "Code layout" table in README.md. Flow of `update`/`require`:
 `Application` → `Snapshot::sync` (first run / changed repositories) → targeted or TTL refresh
 (`GitMirror` fetch + `Snapshot::hydrate` via `ComposerPackages`) → `Snapshot::writeFastComposer`
 (one local `composer` repo per VCS repo, same position/options) → `ComposerSolver` (Composer
-in-process on a temporary composer.json) → `LockValidator` → `LockFile::fixContentHash` →
+CLI on a temporary composer.json) → `LockValidator` → `LockFile::fixContentHash` →
 publish (`ComposerJson::applyRequireChanges` for require).
 
 ## Commands
