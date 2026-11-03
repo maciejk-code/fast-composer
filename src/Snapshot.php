@@ -89,8 +89,19 @@ final class Snapshot
 
     public function isCompatible(array $snapshot, array $rootConfig): bool
     {
-        return ($snapshot['format'] ?? null) === self::FORMAT
-            && ($snapshot['repo_config_hash'] ?? null) === RootConfig::repositoriesHash($rootConfig);
+        if (
+            ($snapshot['format'] ?? null) !== self::FORMAT
+            || ($snapshot['repo_config_hash'] ?? null) !== RootConfig::repositoriesHash($rootConfig)
+        ) {
+            return false;
+        }
+
+        foreach ($snapshot['repos'] ?? [] as $repo) {
+            if (($repo['managed'] ?? false) && ($repo['composer'] ?? null) !== ComposerPackages::composerVersion()) {
+                return false;
+            }
+        }
+        return true;
     }
 
     public function isFresh(array $snapshot, int $ttl): bool
@@ -144,9 +155,13 @@ final class Snapshot
         $snapshot['repos'] = array_intersect_key($snapshot['repos'], $declared);
 
         $pending = [];
+        $rehydrate = [];
+        $composerVersion = ComposerPackages::composerVersion();
         foreach (array_keys($declared) as $url) {
             if (empty($snapshot['repos'][$url]['checked_at'])) {
                 $pending[] = (string) $url;
+            } elseif (($snapshot['repos'][$url]['composer'] ?? null) !== $composerVersion) {
+                $rehydrate[] = (string) $url;
             }
         }
 
@@ -156,6 +171,11 @@ final class Snapshot
                 throw new \RuntimeException("Cannot synchronize VCS repository $url: ".$errors[$url]);
             }
             $this->hydrate($snapshot, $declared[$url]);
+        }
+        // Composer upgrades change VCS package parsing. Rebuild from existing mirrors
+        // without another network fetch, preserving the existing TTL.
+        foreach ($rehydrate as $url) {
+            $this->hydrate($snapshot, $declared[$url], false);
         }
 
         $snapshot['repo_config_hash'] = RootConfig::repositoriesHash($rootConfig);
