@@ -168,22 +168,7 @@ final class Snapshot
         if ($this->isFresh($snapshot, $ttl)) {
             return 0;
         }
-
-        $declared = $this->declaredRepositories($rootConfig);
-        $urls = array_map('strval', array_keys($declared));
-
-        // One network round-trip per repository, overlapped across repositories.
-        $errors = $this->mirror->sync($urls);
-        foreach ($urls as $url) {
-            if (isset($errors[$url])) {
-                throw new \RuntimeException($errors[$url]);
-            }
-            $this->hydrate($snapshot, $declared[$url]);
-        }
-
-        $snapshot['repo_config_hash'] = RootConfig::repositoriesHash($rootConfig);
-        $this->save($snapshot);
-        return count($urls);
+        return $this->refreshRepositories($snapshot, array_keys($this->declaredRepositories($rootConfig)), $rootConfig);
     }
 
     /** @param list<string> $patterns package names or wildcards */
@@ -203,17 +188,24 @@ final class Snapshot
                 }
             }
         }
+        return $this->refreshRepositories($snapshot, $matches, $rootConfig);
+    }
 
-        $errors = $this->mirror->sync($matches);
-        foreach ($matches as $url) {
+    /** Refresh and rehydrate the selected repositories through one shared path. */
+    private function refreshRepositories(array &$snapshot, array $urls, array $rootConfig): int
+    {
+        $declared = $this->declaredRepositories($rootConfig);
+        // One network round-trip per repository, overlapped across repositories.
+        $errors = $this->mirror->sync($urls);
+        foreach ($urls as $url) {
             if (isset($errors[$url])) {
                 throw new \RuntimeException($errors[$url]);
             }
             $this->hydrate($snapshot, $declared[$url]);
         }
-
+        $snapshot['repo_config_hash'] = RootConfig::repositoriesHash($rootConfig);
         $this->save($snapshot);
-        return count($matches);
+        return count($urls);
     }
 
     /**
