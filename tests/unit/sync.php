@@ -25,7 +25,7 @@ $synced = $snapshot->sync($state, $config);
 fc_assert($synced === 0, 'Composer version change should reuse the existing Git mirror');
 fc_assert(
     $snapshot->isCompatible($state, $config)
-    && ($state['repos'][$repo]['composer'] ?? '') === \\FastComposer\\ComposerPackages::composerVersion()
+    && ($state['repos'][$repo]['composer'] ?? '') === \FastComposer\ComposerPackages::composerVersion()
     && $state['repos'][$repo]['checked_at'] === $originalCheckedAt,
     'Composer upgrade did not rehydrate cached metadata without resetting its TTL'
 );
