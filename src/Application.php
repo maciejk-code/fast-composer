@@ -103,15 +103,11 @@ final class Application
                 return 0;
             }
 
-            // By default installation remains standard Composer. The opt-in local-only mode
-            // preserves modified Git source checkouts, regardless of the package type.
+            // Keep install as a transparent Composer delegation.
             if ($cmd === 'install') {
-                if (in_array('--skip-dirty-packages', $args, true)) {
-                    $composerArgs = array_values(array_filter(
-                        $args,
-                        static fn (string $arg): bool => $arg !== '--skip-dirty-packages'
-                    ));
-                    return (new PreservedInstall($root))->run($composerArgs);
+                if (CommandLine::hasFlag($args, '--skip-dirty-packages')) {
+                    fwrite(STDERR, "[fast-composer] --skip-dirty-packages has been removed. Back up/stash local vendor changes before using composer install.\n");
+                    return 2;
                 }
                 return $this->delegateComposer($args, $root);
             }
@@ -584,7 +580,6 @@ final class Application
         echo "  fast-composer install [--skip-dirty-packages] [composer options]\n";
         echo "  fast-composer --version\n\n";
         echo "Fast update/require operations always imply --no-install.\n";
-        echo "Install normally delegates to Composer. --skip-dirty-packages preserves local Git source changes (all package types) when metadata is compatible.\n";
         echo "The first run fetches every VCS repository in parallel into shared local mirrors; no regular Composer solve.\n";
         echo "FAST_COMPOSER_TTL controls broad full-update ref validation (default: 300 seconds).\n";
         echo "FAST_COMPOSER_CACHE_DIR overrides the Fast Composer cache base directory.\n";
