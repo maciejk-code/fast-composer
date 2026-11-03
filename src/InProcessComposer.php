@@ -3,102 +3,14 @@
 namespace FastComposer;
 
 /**
- * Runs the Composer phar inside the current PHP process.
- *
- * The solve itself is identical to `composer ...` in a subprocess; this only avoids paying
- * for a second PHP interpreter start-up. It mirrors what Composer's own bin/composer does
- * before handing over to its Console Application, and declines (returns null) whenever the
- * environment is not the plain phar setup that makes that equivalence obvious.
+ * Load the installed Composer's own classes for VCS metadata and JSON manipulation.
+ * Dependency resolution itself is delegated to Composer's CLI subprocess.
  */
 final class InProcessComposer
 {
-    /** @param list<string> $args Composer arguments, without the leading "composer". */
-    public static function run(array $args, string $cwd, array $env): ?int
-    {
-        $phar = self::composerPhar();
-        if ($phar === null || getcwd() !== $cwd) {
-            return null;
-        }
+    /** @var null|false|string false means the executable has not yet been inspected. */
+    private static $located = false;
 
-        $previousEnv = [];
-        foreach ($env + ['COMPOSER_BINARY' => $phar] as $name => $value) {
-            $previousEnv[$name] = [getenv($name), $_SERVER[$name] ?? null, $_ENV[$name] ?? null];
-            putenv($name.'='.$value);
-            $_SERVER[$name] = $value;
-            $_ENV[$name] = $value;
-        }
-        $previousLocale = setlocale(LC_ALL, '0');
-        $previousReporting = error_reporting();
-        $previousMemory = ini_get('memory_limit');
-        $previousDisplayErrors = ini_get('display_errors');
-
-        try {
-            require_once 'phar://composer.phar/src/bootstrap.php';
-            if (!class_exists(\Composer\Console\Application::class)) {
-                return null;
-            }
-
-            setlocale(LC_ALL, 'C');
-            error_reporting(-1);
-            self::applyComposerIniDefaults();
-            \Composer\Util\ErrorHandler::register();
-
-            try {
-                $application = new \Composer\Console\Application();
-                $application->setAutoExit(false);
-                $application->setCatchExceptions(true);
-                return $application->run(new \Symfony\Component\Console\Input\ArgvInput(array_merge(['composer'], $args)));
-            } finally {
-                restore_error_handler();
-            }
-        } finally {
-            foreach ($previousEnv as $name => [$value, $server, $envValue]) {
-                $value === false ? putenv($name) : putenv($name.'='.$value);
-                if ($server === null) {
-                    unset($_SERVER[$name]);
-                } else {
-                    $_SERVER[$name] = $server;
-                }
-                if ($envValue === null) {
-                    unset($_ENV[$name]);
-                } else {
-                    $_ENV[$name] = $envValue;
-                }
-            }
-            if (is_string($previousLocale)) {
-                setlocale(LC_ALL, $previousLocale);
-            }
-            error_reporting($previousReporting);
-            @ini_set('memory_limit', (string) $previousMemory);
-            @ini_set('display_errors', (string) $previousDisplayErrors);
-        }
-    }
-
-    /** Path of the Composer phar found on PATH, or null when in-process execution is not safe. */
-    public static function composerPhar(): ?string
-    {
-        if (
-            getenv('FAST_COMPOSER_IN_PROCESS') === '0'
-            || PHP_SAPI !== 'cli'
-            || PHP_OS_FAMILY === 'Windows'
-            || !extension_loaded('phar')
-            // Composer would restart itself without Xdebug; a subprocess keeps that behavior.
-            || extension_loaded('xdebug')
-            || (!extension_loaded('iconv') && !extension_loaded('mbstring'))
-            // Only one Composer may live in a process.
-            || class_exists(\Composer\Console\Application::class, false)
-        ) {
-            return null;
-        }
-
-        return self::locatePhar();
-    }
-
-    /**
-     * Make Composer's own classes (e.g. JsonManipulator) available in this process, when the
-     * `composer` on PATH is a phar. Loading classes is safe even where running the whole
-     * Composer application in-process is not.
-     */
     public static function loadClasses(): bool
     {
         if (class_exists(\Composer\Json\JsonManipulator::class, false)) {
@@ -115,73 +27,34 @@ final class InProcessComposer
         return class_exists(\Composer\Json\JsonManipulator::class);
     }
 
-    /** @var null|false|string false: not searched yet */
-    private static $located = false;
-
+    /** Only use classes from the first Composer on PATH, never a different installation. */
     private static function locatePhar(): ?string
     {
         if (self::$located !== false) {
             return self::$located;
         }
-        return self::$located = self::searchPath();
-    }
 
-    private static function searchPath(): ?string
-    {
         foreach (explode(PATH_SEPARATOR, (string) getenv('PATH')) as $dir) {
-            if ($dir === '') {
-                continue;
-            }
             $candidate = rtrim($dir, '/').'/composer';
-            if (!is_file($candidate) || !is_executable($candidate)) {
+            if ($dir === '' || !is_file($candidate) || !is_executable($candidate)) {
                 continue;
             }
             $path = realpath($candidate);
             if ($path === false) {
-                return null;
+                break;
             }
-            // The first `composer` on PATH is what a subprocess would run: accept it only if
-            // it is a genuine Composer phar, otherwise fall back to the subprocess. The alias
-            // is the one Composer's own stub maps.
             try {
-                $isComposerPhar = \Phar::loadPhar($path, 'composer.phar')
+                if (
+                    \Phar::loadPhar($path, 'composer.phar')
                     && is_file('phar://composer.phar/src/Composer/Console/Application.php')
-                    && is_file('phar://composer.phar/src/bootstrap.php');
+                    && is_file('phar://composer.phar/src/bootstrap.php')
+                ) {
+                    return self::$located = $path;
+                }
             } catch (\Throwable) {
-                $isComposerPhar = false;
             }
-            return $isComposerPhar ? $path : null;
+            break; // Never skip a non-phar composer and load classes from a later executable.
         }
-
-        return null;
-    }
-
-    private static function applyComposerIniDefaults(): void
-    {
-        $logsToSapiDefault = ('' === ini_get('error_log') && (bool) ini_get('log_errors'));
-        @ini_set('display_errors', $logsToSapiDefault ? '0' : 'stderr');
-
-        $memoryLimit = getenv('COMPOSER_MEMORY_LIMIT');
-        if (is_string($memoryLimit) && $memoryLimit !== '') {
-            @ini_set('memory_limit', $memoryLimit);
-            return;
-        }
-
-        $current = trim((string) ini_get('memory_limit'));
-        if ($current !== '-1' && self::bytes($current) < 1024 * 1024 * 1536) {
-            @ini_set('memory_limit', '1536M');
-        }
-    }
-
-    private static function bytes(string $value): int
-    {
-        $unit = strtolower(substr($value, -1));
-        $bytes = (int) $value;
-        return match ($unit) {
-            'g' => $bytes * 1024 ** 3,
-            'm' => $bytes * 1024 ** 2,
-            'k' => $bytes * 1024,
-            default => $bytes,
-        };
+        return self::$located = null;
     }
 }
