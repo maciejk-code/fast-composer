@@ -17,6 +17,16 @@ fc_assert(
 fc_assert($snapshot->isCompatible($state, $config), 'sync produced an incompatible snapshot hash');
 fc_assert((bool) glob($base.'/cache/mirrors/*.git'), 'mirror is not stored in the shared cache area');
 
+// Full and targeted refresh must follow the same path and preserve compatible snapshots.
+$state['repos'][$repo]['checked_at'] = time() - 3600;
+fc_assert($snapshot->refreshAllIfStale($state, $config, 300) === 1, 'expired full refresh did not run');
+fc_assert($snapshot->refreshPackages($state, ['acme/a'], $config) === 1, 'targeted refresh did not run');
+fc_assert($snapshot->isCompatible($state, $config), 'refreshed snapshot is incompatible');
+fc_assert(
+    (Snapshot::versions($state)['acme/a']['1.0.0']['source']['reference'] ?? null) === $lockedSha,
+    'refresh changed the locked metadata'
+);
+
 // Adding a repository only synchronizes the new one; removing it drops its packages.
 $repo2 = $base.'/repo2';
 fc_init_repo($repo2, ['name' => 'acme/b', 'type' => 'library']);
