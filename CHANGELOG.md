@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Code size experiment
+
+- Delegate dependency resolution to a normal Composer subprocess and remove the optional in-process execution path. Keep Composer phar class loading for VCS metadata, validation, and require JSON edits. This trades some per-solve startup time for a smaller runtime implementation.
+
 ### Reliability
 
 - VCS source/lock metadata validation uses Composer's ArrayLoader and ArrayDumper to normalize benign differences (empty fields, dependency-name casing, scalar `bin` values) without weakening exact-SHA source verification.
