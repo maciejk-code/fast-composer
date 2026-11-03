@@ -45,7 +45,7 @@ final class LockFile
     }
 
     /** Set the content-hash for the real root composer.json, keeping the file byte-identical otherwise. */
-    public static function fixContentHash(string $lockPath, array $rootConfig): void
+    public static function fixContentHash(string $lockPath, string $composerContents): void
     {
         $raw = is_file($lockPath) ? file_get_contents($lockPath) : false;
         if ($raw === false) {
@@ -58,7 +58,10 @@ final class LockFile
 
         // Patch the hash in place: re-encoding would turn Composer's empty objects ({}) into
         // arrays ([]) and create lock-file noise.
-        $hash = RootConfig::contentHash($rootConfig);
+        if (!InProcessComposer::loadClasses()) {
+            throw new \RuntimeException('Composer classes are not available for lock content-hash calculation');
+        }
+        $hash = \Composer\Package\Locker::getContentHash($composerContents);
         $patched = preg_replace('/("content-hash"\s*:\s*)"[^"]*"/', '${1}"'.$hash.'"', $raw, 1, $count);
         if (!is_string($patched) || $count !== 1) {
             $lock['content-hash'] = $hash;
