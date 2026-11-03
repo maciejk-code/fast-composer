@@ -577,7 +577,7 @@ final class Application
         echo "  fast-composer refresh\n";
         echo "  fast-composer verify\n";
         echo "  fast-composer status\n";
-        echo "  fast-composer install [--skip-dirty-packages] [composer options]\n";
+        echo "  fast-composer install [composer options]\n";
         echo "  fast-composer --version\n\n";
         echo "Fast update/require operations always imply --no-install.\n";
         echo "The first run fetches every VCS repository in parallel into shared local mirrors; no regular Composer solve.\n";
