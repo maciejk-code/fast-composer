@@ -17,6 +17,19 @@ fc_assert(
 fc_assert($snapshot->isCompatible($state, $config), 'sync produced an incompatible snapshot hash');
 fc_assert((bool) glob($base.'/cache/mirrors/*.git'), 'mirror is not stored in the shared cache area');
 
+// Upgrading Composer must invalidate cached package metadata even while its TTL is fresh.
+$originalCheckedAt = $state['repos'][$repo]['checked_at'];
+$state['repos'][$repo]['composer'] = '0.0.0';
+fc_assert(!$snapshot->isCompatible($state, $config), 'an old Composer snapshot must be incompatible');
+$synced = $snapshot->sync($state, $config);
+fc_assert($synced === 0, 'Composer version change should reuse the existing Git mirror');
+fc_assert(
+    $snapshot->isCompatible($state, $config)
+    && ($state['repos'][$repo]['composer'] ?? '') === \FastComposer\ComposerPackages::composerVersion()
+    && $state['repos'][$repo]['checked_at'] === $originalCheckedAt,
+    'Composer upgrade did not rehydrate cached metadata without resetting its TTL'
+);
+
 // Adding a repository only synchronizes the new one; removing it drops its packages.
 $repo2 = $base.'/repo2';
 fc_init_repo($repo2, ['name' => 'acme/b', 'type' => 'library']);

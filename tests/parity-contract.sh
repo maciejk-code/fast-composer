@@ -87,6 +87,11 @@ REPOS="\"repositories\": [{\"type\": \"vcs\", \"url\": \"$LIB\"}, {\"type\": \"v
 scenario default-branch "{\"name\": \"acme/root\", \"minimum-stability\": \"dev\", $REPOS, \"require\": {\"acme/lib\": \"dev-main\"}}" update
 scenario branch-alias "{\"name\": \"acme/root\", \"minimum-stability\": \"dev\", $REPOS, \"require\": {\"acme/lib\": \"^2.0@dev\"}}" update
 scenario tags "{\"name\": \"acme/root\", $REPOS, \"require\": {\"acme/lib\": \"^1.0\"}}" update
+
+# Composer 2.11+ includes config.policy in the lock content-hash.
+if php -r '$v = shell_exec("composer --version"); preg_match("/\\b(\\d+\\.\\d+\\.\\d+)\\b/", $v ?: "", $m); exit(version_compare($m[1] ?? "0", "2.11.0", ">=") ? 0 : 1);'; then
+  scenario policy-content-hash "{\"name\":\"acme/root\", $REPOS, \"config\": {\"policy\": false}, \"require\": {\"acme/lib\":\"^1.0\"}}" update
+fi
 scenario renamed-package "{\"name\": \"acme/root\", $REPOS, \"require\": {\"acme/renamed\": \"^1.0\"}}" update
 scenario repository-exclude "{\"name\": \"acme/root\", \"repositories\": [{\"type\": \"vcs\", \"url\": \"$LIB\", \"exclude\": [\"acme/lib\"]}, $NOPACKAGIST], \"require\": {\"acme/lib\": \"^1.0\"}}" update
 

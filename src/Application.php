@@ -309,7 +309,12 @@ final class Application
                 continue;
             }
 
-            LockFile::fixContentHash($fastLock, $candidateRootCfg);
+            // Hash the exact manifest that will be published, using this Composer version's rules.
+            $realComposer = $newComposer ?? file_get_contents($root.'/composer.json');
+            if (!is_string($realComposer)) {
+                throw new \RuntimeException('Cannot read real composer.json for lock hash');
+            }
+            LockFile::fixContentHash($fastLock, $realComposer);
             $this->log("validation complete; publishing composer files");
 
             $newLock = file_get_contents($fastLock);
