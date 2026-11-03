@@ -70,7 +70,9 @@ CI stays unchanged:
 composer install
 ```
 
-`fast-composer install` delegates directly to standard Composer. It no longer modifies the install lock to preserve locally changed vendor checkouts. Back up or stash such changes before running `composer install`.\n\n## First run
+`fast-composer install` delegates directly to standard Composer. It no longer modifies the install lock to preserve locally changed vendor checkouts. Back up or stash such changes before running `composer install`.
+
+## First run
 
 If no compatible snapshot exists yet, Fast Composer does **not** run a regular Composer solve. It fetches every declared `type: vcs` repository into a local shallow mirror in parallel (one `git fetch` per repository, `FAST_COMPOSER_JOBS` at a time), indexes every branch/tag `composer.json` from those mirrors locally, and then continues on the normal fast path.
 
