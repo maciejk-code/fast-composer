@@ -14,11 +14,6 @@ final class ComposerSolver
     {
         $env = ['COMPOSER' => $composerFile] + self::environment($rootConfig, $root, $packageFiles);
 
-        $code = InProcessComposer::run($args, $root, $env);
-        if ($code !== null) {
-            return $code;
-        }
-
         $previous = [];
         try {
             foreach ($env as $name => $value) {

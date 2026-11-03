@@ -589,7 +589,6 @@ final class Application
         echo "FAST_COMPOSER_TTL controls broad full-update ref validation (default: 300 seconds).\n";
         echo "FAST_COMPOSER_CACHE_DIR overrides the Fast Composer cache base directory.\n";
         echo "FAST_COMPOSER_JOBS limits concurrent Git network operations (default: 8).\n";
-        echo "FAST_COMPOSER_IN_PROCESS=0 runs the Composer solver as a subprocess instead of in-process.\n";
         echo "Targeted update/require and explicit root dev-* constraints always bypass the TTL.\n";
     }
 }
