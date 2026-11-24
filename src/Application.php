@@ -112,21 +112,21 @@ final class Application
                     ));
                     return (new PreservedInstall($root))->run($composerArgs);
                 }
-                if (getenv('FAST_COMPOSER_PREFETCH') !== '0') {
-                    try {
-                        $result = SourcePrefetch::run($root, $args);
-                        if ($result !== null && array_sum($result) > 0) {
-                            $this->log(sprintf(
-                                'source cache prefetch: %d successful, %d failed; running Composer',
-                                $result[0],
-                                $result[1]
-                            ));
+                if (
+                    SourcePrefetch::enabled($args) && is_file($root.'/composer.lock')
+                    && (getenv('FAST_COMPOSER_PREFETCH') !== '0' || getenv('FAST_COMPOSER_ASYNC_REMOVE') !== '0')
+                ) {
+                    $code = InProcessComposer::run($args, $root, [], static function () use ($root, $args): \Composer\Console\Application {
+                        if (\Composer\Composer::getVersion() !== '2.10.3') {
+                            return new \Composer\Console\Application();
                         }
-                    } catch (\Throwable) {
-                        $this->log('source cache prefetch unavailable; running Composer normally');
+                        return new AcceleratedComposerApplication($root, $args);
+                    });
+                    if ($code !== null) {
+                        return $code;
                     }
                 }
-                return AsyncPackageRemoval::run($root, $args, fn (): int => $this->delegateComposer($args, $root));
+                return $this->delegateComposer($args, $root);
             }
 
             if (!in_array($cmd, ['update', 'require'], true)) {

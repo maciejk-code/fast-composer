@@ -12,8 +12,11 @@ namespace FastComposer;
  */
 final class InProcessComposer
 {
-    /** @param list<string> $args Composer arguments, without the leading "composer". */
-    public static function run(array $args, string $cwd, array $env): ?int
+    /**
+     * @param list<string> $args Composer arguments, without the leading "composer".
+     * @param null|callable(): \Composer\Console\Application $applicationFactory
+     */
+    public static function run(array $args, string $cwd, array $env, ?callable $applicationFactory = null): ?int
     {
         $phar = self::composerPhar();
         if ($phar === null || getcwd() !== $cwd) {
@@ -44,7 +47,7 @@ final class InProcessComposer
             \Composer\Util\ErrorHandler::register();
 
             try {
-                $application = new \Composer\Console\Application();
+                $application = $applicationFactory !== null ? $applicationFactory() : new \Composer\Console\Application();
                 $application->setAutoExit(false);
                 $application->setCatchExceptions(true);
                 return $application->run(new \Symfony\Component\Console\Input\ArgvInput(array_merge(['composer'], $args)));

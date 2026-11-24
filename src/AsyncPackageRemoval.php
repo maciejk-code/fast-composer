@@ -2,95 +2,64 @@
 
 namespace FastComposer;
 
-/** Defer only actual rm -rf operations on known package paths containing node_modules. */
+use Composer\Cache;
+use Composer\Composer;
+use Composer\Downloader\GitDownloader;
+use Composer\Downloader\ZipDownloader;
+use Composer\IO\IOInterface;
+use Composer\Package\PackageInterface;
+
+/** Install the scoped filesystem only in the supported native downloaders. */
 final class AsyncPackageRemoval
 {
-    /** @param list<string> $args */
-    public static function run(string $root, array $args, callable $delegate): int
+    /** @param list<PackageInterface> $packages */
+    public static function attach(string $root, Composer $composer, IOInterface $io, array $packages): ?DeferredPackageFilesystem
     {
-        if (
-            PHP_OS_FAMILY === 'Windows' || getenv('FAST_COMPOSER_ASYNC_REMOVE') === '0'
-            || !SourcePrefetch::enabled($args) || in_array('--download-only', $args, true)
-            || !InProcessComposer::loadClasses()
-        ) {
-            return $delegate();
+        if (!in_array(PHP_OS_FAMILY, ['Linux', 'Darwin'], true) || !is_executable('/bin/rm')) {
+            return null;
         }
-        $temp = null;
-        $oldPath = getenv('PATH');
-        $oldManifest = getenv('FAST_COMPOSER_REMOVE_MANIFEST');
-        try {
-            [$config] = SourcePrefetch::configuration($root);
-            $installedPath = rtrim((string) $config->get('vendor-dir'), '/\\').'/composer/installed.json';
-            $paths = self::eligiblePaths($root, $installedPath);
-            $rm = self::findRm((string) $oldPath);
-            if ($paths !== [] && $rm !== null) {
-                $temp = sys_get_temp_dir().'/fast-composer-rm-'.bin2hex(random_bytes(12));
-                if (!mkdir($temp, 0700)) {
-                    throw new \RuntimeException('Cannot create removal shim');
-                }
-                $manifest = $temp.'/manifest.json';
-                $shim = $temp.'/rm';
-                if (
-                    file_put_contents($manifest, json_encode(['rm' => $rm, 'paths' => $paths], JSON_THROW_ON_ERROR)) === false
-                    || file_put_contents($shim, "#!/bin/sh\nexec ".escapeshellarg(PHP_BINARY).' '
-                        .escapeshellarg(__DIR__.'/../bin/remove-package-worker.php').' "$@"'."\n") === false
-                    || !chmod($shim, 0700)
-                ) {
-                    throw new \RuntimeException('Cannot write removal shim');
-                }
-                putenv('FAST_COMPOSER_REMOVE_MANIFEST='.$manifest);
-                putenv('PATH='.$temp.PATH_SEPARATOR.$oldPath);
+        $root = realpath($root);
+        $process = $composer->getLoop()->getProcessExecutor();
+        if ($root === false || $root === '/' || $process === null) {
+            return null;
+        }
+        $filesystem = new DeferredPackageFilesystem($root, $process);
+        $manager = $composer->getDownloadManager();
+        $config = $composer->getConfig();
+        $git = null;
+        $zip = null;
+        // Do not replace custom downloaders registered by plugins.
+        if (get_class($manager->getDownloader('git')) === GitDownloader::class) {
+            $git = new GitDownloader($io, $config, $process, $filesystem);
+        }
+        if (get_class($manager->getDownloader('zip')) === ZipDownloader::class) {
+            $cache = null;
+            if ($config->get('cache-files-ttl') > 0) {
+                $cache = new Cache($io, (string) $config->get('cache-files-dir'), 'a-z0-9_./');
+                $cache->setReadOnly((bool) $config->get('cache-read-only'));
             }
-        } catch (\Throwable) {
-            // Setup failure leaves standard Composer responsible for deletion.
+            $zip = new ZipDownloader(
+                $io,
+                $config,
+                $composer->getLoop()->getHttpDownloader(),
+                $composer->getEventDispatcher(),
+                $cache,
+                $filesystem,
+                $process
+            );
         }
-        try {
-            return $delegate();
-        } finally {
-            $oldPath === false ? putenv('PATH') : putenv('PATH='.$oldPath);
-            $oldManifest === false ? putenv('FAST_COMPOSER_REMOVE_MANIFEST') : putenv('FAST_COMPOSER_REMOVE_MANIFEST='.$oldManifest);
-            if ($temp !== null) {
-                @unlink($temp.'/rm');
-                @unlink($temp.'/manifest.json');
-                @rmdir($temp);
+        foreach ($packages as $package) {
+            $path = $composer->getInstallationManager()->getInstallPath($package);
+            if ($path !== null) {
+                $filesystem->allow($path);
             }
         }
-    }
-
-    /** @return list<string> real package directories within the project */
-    public static function eligiblePaths(string $root, string $installedPath): array
-    {
-        $realRoot = realpath($root);
-        if ($realRoot === false || !is_file($installedPath)) {
-            return [];
+        if ($git !== null) {
+            $manager->setDownloader('git', $git);
         }
-        $paths = [];
-        foreach (JsonFile::read($installedPath)['packages'] ?? [] as $package) {
-            $relative = $package['install-path'] ?? null;
-            if (!is_string($relative) || $relative === '') {
-                continue;
-            }
-            $raw = dirname($installedPath).'/'.$relative;
-            $path = realpath($raw);
-            if (
-                $path === false || !str_starts_with($path, $realRoot.'/')
-                || is_link($raw) || !is_dir($path.'/node_modules') || is_link($path.'/node_modules')
-            ) {
-                continue;
-            }
-            $paths[] = $path;
+        if ($zip !== null) {
+            $manager->setDownloader('zip', $zip);
         }
-        return array_values(array_unique($paths));
-    }
-
-    private static function findRm(string $path): ?string
-    {
-        foreach (explode(PATH_SEPARATOR, $path) as $directory) {
-            if ($directory !== '' && is_executable($directory.'/rm')) {
-                $real = realpath($directory.'/rm');
-                return $real !== false ? $real : null;
-            }
-        }
-        return null;
+        return $filesystem;
     }
 }

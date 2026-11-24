@@ -17,15 +17,14 @@ final class SourcePrefetch
 {
     /**
      * @param list<string> $args
+     * @param list<string> $operationNames
      * @return array{int,int}|null successful and failed mirror groups; null when bypassed
      */
-    public static function run(string $root, array $args): ?array
+    public static function run(string $root, array $args, Config $config, string $cache, array $operationNames): ?array
     {
         if (!self::enabled($args) || !is_file($root.'/composer.lock') || !InProcessComposer::loadClasses()) {
             return null;
         }
-        [$config] = self::configuration($root);
-        $cache = (string) $config->get('cache-vcs-dir');
         if ($config->get('cache-read-only') || $cache === '' || !Cache::isUsable($cache)) {
             return null;
         }
@@ -33,8 +32,16 @@ final class SourcePrefetch
         $installed = is_file($installedPath) ? JsonFile::read($installedPath) : [];
         $lock = JsonFile::read($root.'/composer.lock');
         $noDev = in_array('--no-dev', $args, true) || (bool) getenv('COMPOSER_NO_DEV');
+        $digest = hash_file('sha256', $root.'/composer.lock');
+        if ($digest === false) {
+            return null;
+        }
         $groups = [];
         foreach (self::candidates($lock, $installed, $installedPath, $noDev, $config->get('preferred-install'), $args) as $package) {
+            if (!in_array($package['name'], $operationNames, true)) {
+                continue;
+            }
+            $config->prohibitUrlByConfig($package['source']['url']);
             $key = self::cacheKey($package['source']['url']);
             $groups[$key][] = $package;
         }
@@ -49,8 +56,8 @@ final class SourcePrefetch
             $commands[$key] = [[
                 PHP_BINARY, '-r',
                 'require $argv[1]; require $argv[2]; require $argv[3]; '
-                .'exit(\FastComposer\SourcePrefetch::worker(array_slice($argv, 4)));',
-                '--', __DIR__.'/InProcessComposer.php', __DIR__.'/JsonFile.php', __FILE__,
+                .'exit(\FastComposer\SourcePrefetch::worker($argv[4], $argv[5], array_slice($argv, 6)));',
+                '--', __DIR__.'/InProcessComposer.php', __DIR__.'/JsonFile.php', __FILE__, $cache, $digest,
                 ...$names,
             ], $root, ['GIT_TERMINAL_PROMPT' => '0', 'SSH_ASKPASS_REQUIRE' => 'never']];
         }
@@ -206,7 +213,7 @@ final class SourcePrefetch
      *
      * @param list<string> $names
      */
-    public static function worker(array $names): int
+    public static function worker(string $cache, string $digest, array $names): int
     {
         try {
             $root = getcwd();
@@ -214,8 +221,10 @@ final class SourcePrefetch
                 return 1;
             }
             [$config, $io] = self::configuration($root);
-            $cache = (string) $config->get('cache-vcs-dir');
             if ($config->get('cache-read-only') || $cache === '' || !Cache::isUsable($cache)) {
+                return 1;
+            }
+            if (hash_file('sha256', $root.'/composer.lock') !== $digest || is_link($cache) || !is_dir($cache)) {
                 return 1;
             }
             $lock = JsonFile::read($root.'/composer.lock');
@@ -235,7 +244,7 @@ final class SourcePrefetch
             }
             $config->prohibitUrlByConfig($url);
             $path = rtrim($cache, '/\\').'/'.self::cacheKey($url);
-            if (is_link($path) || (!is_dir($cache) && !@mkdir($cache, 0700, true) && !is_dir($cache))) {
+            if (is_link($path) || (file_exists($path) && !is_dir($path))) {
                 return 1;
             }
             // Coordinate Fast Composer workers from different projects. Standard Composer
@@ -251,6 +260,15 @@ final class SourcePrefetch
                 ProcessExecutor::setTimeout((int) $config->get('process-timeout'));
                 $process = new ProcessExecutor($io);
                 Git::cleanEnv($process);
+                if (is_dir($path)) {
+                    if (
+                        $process->execute(['git', 'rev-parse', '--is-bare-repository'], $bare, $path) !== 0 || trim($bare) !== 'true'
+                        || $process->execute(['git', 'config', '--get', 'remote.origin.url'], $origin, $path) !== 0
+                        || trim($origin) !== $url
+                    ) {
+                        return 1;
+                    }
+                }
                 $git = new Git($io, $config, $process, new Filesystem($process));
                 $git->setHttpDownloader(new HttpDownloader($io, $config));
                 foreach ($packages as $package) {

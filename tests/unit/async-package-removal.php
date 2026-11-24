@@ -1,35 +1,37 @@
 <?php
 
-use FastComposer\AsyncPackageRemoval;
-use FastComposer\Process;
+use FastComposer\DeferredPackageFilesystem;
+use FastComposer\InProcessComposer;
 
-if (PHP_OS_FAMILY === 'Windows') {
+if (!in_array(PHP_OS_FAMILY, ['Linux', 'Darwin'], true) || !InProcessComposer::loadClasses()) {
     return;
 }
-$root = $base.'/project';
-$installedPath = $root.'/vendor/composer/installed.json';
+$root = realpath($base);
 $package = $root.'/plugins/example';
-mkdir(dirname($installedPath), 0700, true);
 mkdir($package.'/node_modules', 0700, true);
 file_put_contents($package.'/node_modules/generated', 'data');
-file_put_contents($installedPath, json_encode(['packages' => [['install-path' => '../../plugins/example']]]));
-fc_assert(AsyncPackageRemoval::eligiblePaths($root, $installedPath) === [$package], 'Custom installer path with node_modules');
-$manifest = $base.'/manifest.json';
-file_put_contents($manifest, json_encode(['rm' => '/bin/rm', 'paths' => [$package]]));
-$worker = dirname(__DIR__, 2).'/bin/remove-package-worker.php';
-$old = getenv('FAST_COMPOSER_REMOVE_MANIFEST');
-putenv('FAST_COMPOSER_REMOVE_MANIFEST='.$manifest);
-try {
-    [$code] = Process::run([PHP_BINARY, $worker, '-rf', $package]);
-    fc_assert($code === 0 && !file_exists($package), 'Actual deletion frees path immediately');
-    mkdir($package, 0700, true);
-    file_put_contents($package.'/new', 'replacement');
-    $deadline = microtime(true) + 5;
-    do {
-        usleep(10000);
-        $trash = glob(dirname($package).'/.fast-composer-trash-*');
-    } while ($trash !== [] && microtime(true) < $deadline);
-    fc_assert($trash === [] && is_file($package.'/new'), 'Cleanup never touches replacement');
-} finally {
-    $old === false ? putenv('FAST_COMPOSER_REMOVE_MANIFEST') : putenv('FAST_COMPOSER_REMOVE_MANIFEST='.$old);
-}
+$fs = new DeferredPackageFilesystem($root, new \Composer\Util\ProcessExecutor());
+$fs->allow($package);
+fc_assert($fs->removeDirectory($package) && !file_exists($package), 'Package path freed');
+mkdir($package, 0700, true);
+file_put_contents($package.'/new', 'replacement');
+fc_assert($fs->finish(), 'Deferred cleanup completed');
+fc_assert(is_file($package.'/new'), 'Replacement is untouched');
+
+$outside = $root.'/outside';
+mkdir($outside.'/node_modules', 0700, true);
+file_put_contents($outside.'/node_modules/keep', 'safe');
+$link = $root.'/link';
+symlink($outside, $link);
+$fs->allow($link);
+fc_assert($fs->removeDirectory($link), 'Ordinary symlink removal');
+fc_assert(is_file($outside.'/node_modules/keep'), 'Symlink target survives');
+
+// A package replaced between approval and deletion is handled by ordinary Composer.
+mkdir($package.'/node_modules', 0700, true);
+$fs->allow($package);
+rename($package, $package.'-old');
+mkdir($package.'/node_modules', 0700, true);
+fc_assert($fs->removeDirectory($package), 'Ordinary removal after inode change');
+fc_assert(is_file($package.'-old/new'), 'Previously approved directory is untouched');
+fc_assert($fs->finish(), 'No stale cleanup');
