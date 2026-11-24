@@ -61,7 +61,7 @@ final class AcceleratedComposerApplication extends Application
             }
         }
 
-        if ($names !== [] && getenv('FAST_COMPOSER_PREFETCH') !== '0') {
+        if ($names !== [] && getenv('FAST_COMPOSER_PREFETCH') !== '0' && InstallCompatibility::supportsPrefetch()) {
             try {
                 $config = $composer->getConfig();
                 $this->cache = InstallCache::open($this->root, $config);
@@ -70,14 +70,21 @@ final class AcceleratedComposerApplication extends Application
                     if ($result !== null && $result[0] > 0 && $result[1] === 0) {
                         $config->merge(['config' => ['cache-vcs-dir' => $this->cache->path]], 'fast-composer private install cache');
                         $event->getIO()->writeError(sprintf('[fast-composer] prefetched %d Git mirrors', $result[0]));
+                    } elseif ($result !== null && $result[1] > 0) {
+                        $event->getIO()->writeError('[fast-composer] prefetch workers failed; continuing with Composer');
                     }
+                } else {
+                    $event->getIO()->writeError('[fast-composer] private VCS cache unavailable; continuing with Composer', true, \Composer\IO\IOInterface::VERBOSE);
                 }
             } catch (\Throwable) {
                 $event->getIO()->writeError('[fast-composer] prefetch unavailable; continuing with Composer');
             }
         }
 
-        if ($removals !== [] && getenv('FAST_COMPOSER_ASYNC_REMOVE') !== '0' && !in_array('--download-only', $this->args, true)) {
+        if (
+            $removals !== [] && getenv('FAST_COMPOSER_ASYNC_REMOVE') !== '0'
+            && !in_array('--download-only', $this->args, true) && InstallCompatibility::supportsRemoval()
+        ) {
             try {
                 $this->removal = AsyncPackageRemoval::attach($this->root, $composer, $event->getIO(), $removals);
             } catch (\Throwable) {

@@ -3,7 +3,7 @@
 use FastComposer\DeferredPackageFilesystem;
 use FastComposer\InProcessComposer;
 
-if (!in_array(PHP_OS_FAMILY, ['Linux', 'Darwin'], true) || !InProcessComposer::loadClasses()) {
+if (!in_array(PHP_OS_FAMILY, ['Linux', 'Darwin'], true) || !InProcessComposer::loadClasses() || !\FastComposer\InstallCompatibility::supportsRemoval()) {
     return;
 }
 $root = realpath($base);

@@ -106,7 +106,6 @@ final class DeferredPackageFilesystem extends Filesystem
         return $this->defer($directory) || parent::removeDirectory($directory);
     }
 
-    /** @return \React\Promise\PromiseInterface<bool> */
     public function removeDirectoryAsync(string $directory): \React\Promise\PromiseInterface
     {
         return $this->defer($directory) ? \React\Promise\resolve(true) : parent::removeDirectoryAsync($directory);

@@ -55,9 +55,9 @@ final class SourcePrefetch
             $names = array_column($packages, 'name');
             $commands[$key] = [[
                 PHP_BINARY, '-r',
-                'require $argv[1]; require $argv[2]; require $argv[3]; '
-                .'exit(\FastComposer\SourcePrefetch::worker($argv[4], $argv[5], array_slice($argv, 6)));',
-                '--', __DIR__.'/InProcessComposer.php', __DIR__.'/JsonFile.php', __FILE__, $cache, $digest,
+                'require $argv[1]; require $argv[2]; require $argv[3]; require $argv[4]; '
+                .'exit(\FastComposer\SourcePrefetch::worker($argv[5], $argv[6], array_slice($argv, 7)));',
+                '--', __DIR__.'/InProcessComposer.php', __DIR__.'/JsonFile.php', __FILE__, __DIR__.'/InstallCompatibility.php', $cache, $digest,
                 ...$names,
             ], $root, ['GIT_TERMINAL_PROMPT' => '0', 'SSH_ASKPASS_REQUIRE' => 'never']];
         }
@@ -217,7 +217,7 @@ final class SourcePrefetch
     {
         try {
             $root = getcwd();
-            if ($root === false || !InProcessComposer::loadClasses() || !self::enabled([])) {
+            if ($root === false || !InProcessComposer::loadClasses() || !InstallCompatibility::supportsPrefetch() || !self::enabled([])) {
                 return 1;
             }
             [$config, $io] = self::configuration($root);
@@ -259,7 +259,11 @@ final class SourcePrefetch
                 }
                 ProcessExecutor::setTimeout((int) $config->get('process-timeout'));
                 $process = new ProcessExecutor($io);
-                Git::cleanEnv($process);
+                if (InstallCompatibility::callableMethod(Git::class, 'cleanEnv', 1)) {
+                    Git::cleanEnv($process);
+                } else {
+                    Git::cleanEnv();
+                }
                 if (is_dir($path)) {
                     if (
                         $process->execute(['git', 'rev-parse', '--is-bare-repository'], $bare, $path) !== 0 || trim($bare) !== 'true'

@@ -101,9 +101,12 @@ by their own Composer options.
 fast-composer install
 ```
 
-On stable Composer phars from 2.8.12 through 2.10.x, acceleration attaches to Composer's
-`PRE_OPERATIONS_EXEC` event, after lock/platform/policy validation. The compatibility matrix exercises 2.8.12, 2.9.5 and 2.10.3 on Linux and
-2.10.3 on macOS. Other versions and unsupported modes use normal Composer.
+On stable Composer 2.x phars, acceleration is negotiated at runtime rather than
+by an exact version or minor-version range. It checks the install-event and
+subclass signatures before loading any adapter, and tests Git prefetch and
+scoped deletion independently. A missing or incompatible API falls back for
+that optimization only. Unknown major versions and prereleases remain on
+ordinary Composer until reviewed. CI exercises several 2.x versions and macOS.
 Use the latest security-patched Composer release; compatibility does not imply
 that an older Composer release is safe. No extra flag is required.
 Git prefetch uses the approved install/update operations and source preferences

@@ -1,10 +1,31 @@
 <?php
 
 use FastComposer\InstallCompatibility;
+use FastComposer\InProcessComposer;
 
-foreach (['2.8.12', '2.8.13', '2.9.0', '2.9.5', '2.10.3', '2.10.10'] as $version) {
-    fc_assert(InstallCompatibility::supports($version), 'Supported: '.$version);
+class InstallCompatibilityFixture
+{
+    public function matching(string $directory): bool
+    {
+        return true;
+    }
+
+    final public function finalMethod(string $directory): bool
+    {
+        return true;
+    }
+
+    public function changed(int $directory): bool
+    {
+        return true;
+    }
 }
-foreach (['2.8.11', '2.7.9', '2.3.10', '2.11.0', '3.0.0', '2.10.3-dev', '2.10.3-RC1'] as $version) {
-    fc_assert(!InstallCompatibility::supports($version), 'Fallback: '.$version);
+
+fc_assert(InstallCompatibility::canOverride(new ReflectionMethod(InstallCompatibilityFixture::class, 'matching'), ['string'], 'bool'), 'Matching signature');
+fc_assert(!InstallCompatibility::canOverride(new ReflectionMethod(InstallCompatibilityFixture::class, 'finalMethod'), ['string'], 'bool'), 'Final override rejected');
+fc_assert(!InstallCompatibility::canOverride(new ReflectionMethod(InstallCompatibilityFixture::class, 'changed'), ['string'], 'bool'), 'Changed parameter rejected');
+fc_assert(!InstallCompatibility::callableMethod(InstallCompatibilityFixture::class, 'missing', 0), 'Missing method rejected');
+fc_assert(!InstallCompatibility::callableMethod(InstallCompatibilityFixture::class, 'matching', 0), 'Wrong arity rejected');
+if (InProcessComposer::loadClasses() && InstallCompatibility::supportsApplication()) {
+    fc_assert(class_exists(\FastComposer\AcceleratedComposerApplication::class), 'Application can be declared safely');
 }

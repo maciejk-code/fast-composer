@@ -117,7 +117,7 @@ final class Application
                     && (getenv('FAST_COMPOSER_PREFETCH') !== '0' || getenv('FAST_COMPOSER_ASYNC_REMOVE') !== '0')
                 ) {
                     $code = InProcessComposer::run($args, $root, [], static function () use ($root, $args): \Composer\Console\Application {
-                        if (!InstallCompatibility::supports(\Composer\Composer::getVersion())) {
+                        if (!InstallCompatibility::supportsApplication()) {
                             return new \Composer\Console\Application();
                         }
                         return new AcceleratedComposerApplication($root, $args);

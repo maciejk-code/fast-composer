@@ -29,10 +29,10 @@ final class AsyncPackageRemoval
         $git = null;
         $zip = null;
         // Do not replace custom downloaders registered by plugins.
-        if (get_class($manager->getDownloader('git')) === GitDownloader::class) {
+        if (InstallCompatibility::supportsGitDownloader() && get_class($manager->getDownloader('git')) === GitDownloader::class) {
             $git = new GitDownloader($io, $config, $process, $filesystem);
         }
-        if (get_class($manager->getDownloader('zip')) === ZipDownloader::class) {
+        if (InstallCompatibility::supportsZipDownloader() && get_class($manager->getDownloader('zip')) === ZipDownloader::class) {
             $cache = null;
             if ($config->get('cache-files-ttl') > 0) {
                 $cache = new Cache($io, (string) $config->get('cache-files-dir'), 'a-z0-9_./');
