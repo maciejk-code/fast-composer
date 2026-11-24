@@ -103,15 +103,33 @@ final class Application
                 return 0;
             }
 
-            // By default installation remains standard Composer. The opt-in local-only mode
-            // preserves modified Git source checkouts, regardless of the package type.
+            // Composer remains responsible for every installation operation.
             if ($cmd === 'install') {
+                $prefetch = in_array('--prefetch-source', $args, true);
+                $args = array_values(array_filter(
+                    $args,
+                    static fn (string $arg): bool => $arg !== '--prefetch-source'
+                ));
                 if (in_array('--skip-dirty-packages', $args, true)) {
                     $composerArgs = array_values(array_filter(
                         $args,
                         static fn (string $arg): bool => $arg !== '--skip-dirty-packages'
                     ));
                     return (new PreservedInstall($root))->run($composerArgs);
+                }
+                if ($prefetch) {
+                    try {
+                        $result = SourcePrefetch::run($root, $args);
+                        if ($result !== null) {
+                            $this->log(sprintf(
+                                'source cache prefetch: %d successful, %d failed; running Composer',
+                                $result[0],
+                                $result[1]
+                            ));
+                        }
+                    } catch (\Throwable) {
+                        $this->log('source cache prefetch unavailable; running Composer normally');
+                    }
                 }
                 return $this->delegateComposer($args, $root);
             }
@@ -581,10 +599,11 @@ final class Application
         echo "  fast-composer refresh\n";
         echo "  fast-composer verify\n";
         echo "  fast-composer status\n";
-        echo "  fast-composer install [--skip-dirty-packages] [composer options]\n";
+        echo "  fast-composer install [--prefetch-source] [--skip-dirty-packages] [composer options]\n";
         echo "  fast-composer --version\n\n";
         echo "Fast update/require operations always imply --no-install.\n";
-        echo "Install normally delegates to Composer. --skip-dirty-packages preserves local Git source changes (all package types) when metadata is compatible.\n";
+        echo "Install delegates to Composer. --prefetch-source warms SSH Git source-only packages in parallel.\n";
+        echo "--skip-dirty-packages preserves local Git source changes (all package types) when metadata is compatible.\n";
         echo "The first run fetches every VCS repository in parallel into shared local mirrors; no regular Composer solve.\n";
         echo "FAST_COMPOSER_TTL controls broad full-update ref validation (default: 300 seconds).\n";
         echo "FAST_COMPOSER_CACHE_DIR overrides the Fast Composer cache base directory.\n";

@@ -95,6 +95,28 @@ Once local work has been committed/pushed or backed up, run plain `composer inst
 restore reproducibility. Composer plugins and scripts still run unless explicitly disabled
 by their own Composer options.
 
+## Optional parallel source downloads
+
+```bash
+FAST_COMPOSER_JOBS=8 fast-composer install --prefetch-source
+```
+
+This experimental, opt-in mode warms Composer's own VCS cache before invoking the
+original install command. It targets missing or changed Git packages without a
+dist archive using SSH URLs, including WordPress plugins installed outside vendor.
+It uses Composer's own Git mirror implementation, including its branch/tag checks,
+and groups packages by cache directory to avoid parallel writes to a single mirror.
+
+It does not edit the lock, installed metadata or working checkouts. Unchanged
+installed packages are skipped. Failed prefetches fall back to ordinary Composer,
+which remains responsible for the final exit status. Composer's configured cache
+directory, process timeout and URL policy are respected. Offline, no-cache,
+dry-run, custom-manifest and read-only-cache modes bypass warming.
+Combining this flag with `--skip-dirty-packages` currently bypasses warming to
+avoid fetching revisions that the temporary preservation lock will not install.
+Use regular Composer if another process is concurrently writing the same VCS cache.
+Packages with dist archives and non-SSH URLs are outside the initial scope.
+
 ## First run
 
 If no compatible snapshot exists yet, Fast Composer does **not** run a regular Composer solve. It fetches every declared `type: vcs` repository into a local shallow mirror in parallel (one `git fetch` per repository, `FAST_COMPOSER_JOBS` at a time), indexes every branch/tag `composer.json` from those mirrors locally, and then continues on the normal fast path.
