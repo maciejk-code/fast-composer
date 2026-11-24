@@ -50,7 +50,11 @@ final class InProcessComposer
                 $application = $applicationFactory !== null ? $applicationFactory() : new \Composer\Console\Application();
                 $application->setAutoExit(false);
                 $application->setCatchExceptions(true);
-                return $application->run(new \Symfony\Component\Console\Input\ArgvInput(array_merge(['composer'], $args)));
+                $code = $application->run(new \Symfony\Component\Console\Input\ArgvInput(array_merge(['composer'], $args)));
+                if ($application instanceof AcceleratedComposerApplication && !$application->finish() && $code === 0) {
+                    return 1;
+                }
+                return $code;
             } finally {
                 restore_error_handler();
             }

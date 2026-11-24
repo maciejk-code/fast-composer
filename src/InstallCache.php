@@ -4,6 +4,7 @@ namespace FastComposer;
 
 use Composer\Cache;
 use Composer\Config;
+use Composer\Util\Url;
 
 /** A persistent, private VCS cache not shared with plain Composer. */
 final class InstallCache
@@ -32,9 +33,16 @@ final class InstallCache
         }
         $lockData = JsonFile::read($root.'/composer.lock');
         $urls = [];
+        $keys = [];
         foreach (LockFile::packages($lockData) as $package) {
             if (is_string($package['source']['url'] ?? null)) {
-                $urls[] = $package['source']['url'];
+                $url = $package['source']['url'];
+                $key = (string) preg_replace('{[^a-z0-9.]}i', '-', Url::sanitize($url));
+                if (isset($keys[$key]) && $keys[$key] !== $url) {
+                    return null;
+                }
+                $keys[$key] = $url;
+                $urls[] = $url;
             }
         }
         sort($urls, SORT_STRING);
@@ -47,7 +55,7 @@ final class InstallCache
             return null;
         }
         $lockPath = $path.'/.operation.lock';
-        if (is_link($lockPath)) {
+        if (is_link($lockPath) || (file_exists($lockPath) && !is_file($lockPath))) {
             return null;
         }
         $lock = @fopen($lockPath, 'c');

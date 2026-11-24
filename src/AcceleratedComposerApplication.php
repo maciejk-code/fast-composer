@@ -24,6 +24,7 @@ final class AcceleratedComposerApplication extends Application
         register_shutdown_function([$this, 'finish']);
     }
 
+    /** @phpstan-return ($required is true ? Composer : Composer|null) */
     public function getComposer(bool $required = true, ?bool $disablePlugins = null, ?bool $disableScripts = null): ?Composer
     {
         $composer = parent::getComposer($required, $disablePlugins, $disableScripts);
@@ -36,11 +37,12 @@ final class AcceleratedComposerApplication extends Application
 
     public function accelerate(InstallerEvent $event): void
     {
-        if (!$event->isExecutingOperations() || $event->getTransaction() === null) {
+        $transaction = $event->getTransaction();
+        if (!$event->isExecutingOperations() || $transaction === null) {
             return;
         }
         $composer = $event->getComposer();
-        $operations = $event->getTransaction()->getOperations();
+        $operations = $transaction->getOperations();
         $names = [];
         $removals = [];
         foreach ($operations as $operation) {
@@ -50,7 +52,7 @@ final class AcceleratedComposerApplication extends Application
                     // Preserve Composer's own download-plugin batch ordering.
                     return;
                 }
-                $names[] = $target->getName();
+                $names[$target->getName()] = [$target->getSourceUrl(), $target->getSourceReference()];
             }
             if ($operation instanceof UpdateOperation) {
                 $removals[] = $operation->getInitialPackage();
@@ -84,9 +86,12 @@ final class AcceleratedComposerApplication extends Application
         }
     }
 
-    public function finish(): void
+    public function finish(): bool
     {
-        $this->removal?->finish();
+        $ok = $this->removal?->finish() ?? true;
         $this->cache?->close();
+        $this->removal = null;
+        $this->cache = null;
+        return $ok;
     }
 }

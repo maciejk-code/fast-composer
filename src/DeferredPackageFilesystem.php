@@ -79,11 +79,15 @@ final class DeferredPackageFilesystem extends Filesystem
         $command = PHP_OS_FAMILY === 'Darwin'
             ? ['/bin/rm', '-rf', '-x', '--', $trash.'/package']
             : ['/bin/rm', '-rf', '--one-file-system', '--', $trash.'/package'];
-        $process = proc_open($command, [
-            0 => ['file', '/dev/null', 'r'],
-            1 => ['file', '/dev/null', 'a'],
-            2 => ['file', '/dev/null', 'a'],
-        ], $pipes);
+        try {
+            $process = proc_open($command, [
+                0 => ['file', '/dev/null', 'r'],
+                1 => ['file', '/dev/null', 'a'],
+                2 => ['file', '/dev/null', 'a'],
+            ], $pipes);
+        } catch (\Throwable) {
+            $process = false;
+        }
         if (!is_resource($process)) {
             // Do not silently lose track of a moved directory if cleanup cannot start.
             if (!file_exists($path) && !is_link($path) && @rename($trash.'/package', $path)) {

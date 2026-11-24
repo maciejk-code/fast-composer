@@ -101,38 +101,35 @@ by their own Composer options.
 fast-composer install
 ```
 
-Parallel Git prefetch warms Composer's native VCS cache for missing/changed remote
-SSH and HTTPS Git packages expected to install from source, including packages
-that offer dist archives. Source selection follows CLI preferences, configured
-package patterns and the previously installed source where applicable.
-Ordinary dist downloads remain Composer's own parallel HTTP downloads.
+On the tested Composer 2.10.3 phar, acceleration attaches to Composer's
+`PRE_OPERATIONS_EXEC` event, after lock/platform/policy validation. Other
+versions and unsupported modes use normal Composer. No extra flag is required.
+Git prefetch uses the approved install/update operations and source preferences
+(including dist-capable packages), with a private, per-project VCS cache and
+a lock held through installation. Plain Composer keeps its own cache.
+Existing shared VCS caches are not migrated; first use can be slower. Explicit
+COMPOSER_CACHE_VCS_DIR, read-only cache, dry-run, offline, custom manifests and
+download-modifying plugin installation bypass prefetch. Dist downloads use
+Composer's native parallel HTTP downloads.
 
-On Unix, an installed package inside the project with a real `node_modules`
-directory is eligible for deferred removal. Only when Composer actually invokes
-`rm -rf` for that exact package path, a temporary PATH shim atomically renames the
-whole package to a private sibling directory and launches deletion of that sibling
-without waiting. The replacement package is never deleted by the cleanup worker.
-There is no speculative move of a live checkout, no cross-filesystem copy and no
-deletion of node_modules when Composer updates a checkout in place. Other rm
-commands pass through unchanged. If cleanup fails, the reported
-`.fast-composer-trash-*` directory may remain and can be removed manually.
-The shim is inherited by Composer child scripts; avoid concurrent edits/install
-processes in the same project. Non-Unix systems use normal deletion.
+On Linux/macOS, built-in Git and ZIP downloaders use a scoped filesystem
+for actual deletion calls on installed update/removal package paths containing
+node_modules. The directory must be within the project, canonical, non-symlinked,
+on the same filesystem and still match its recorded identity. No PATH shim,
+shell interpolation or speculative checkout movement. Cleanup runs in parallel
+with installation and is joined before normal exit; errors are reported and
+failed quarantine directories retained. In-place Git updates need not delete
+node_modules. Custom downloaders and unsupported paths use standard removal.
+Concurrent same-user filesystem mutation is unsupported; PHP path operations
+cannot provide an absolute race-free guarantee.
 
-Failed prefetches fall back to regular Composer. Dry-run, no-cache, offline and
-custom-manifest modes bypass both optimizations; the dirty-checkout preservation
-overlay currently uses standard Composer directly. Composer remains authoritative
-for installation and exit status. No extra flag is required.
+Opt out with `FAST_COMPOSER_PREFETCH=0` or `FAST_COMPOSER_ASYNC_REMOVE=0`.
+`FAST_COMPOSER_JOBS` controls prefetch concurrency.
+The dirty-package preservation overlay still delegates to standard Composer.
 
-Opt out for troubleshooting with `FAST_COMPOSER_PREFETCH=0` or
-`FAST_COMPOSER_ASYNC_REMOVE=0`. `FAST_COMPOSER_JOBS` controls prefetch concurrency.
-Avoid simultaneous external Composer processes writing the same VCS cache.
-
-Benchmark: `bash benchmarks/install.sh` compares cold and warm VCS caches using
-a deterministic SSH fixture and injected remote latency, and checks installed
-revisions. `bash benchmarks/removal.sh` measures blocking and total deletion
-time for a large synthetic node_modules directory. Real performance depends
-on disk, network and repository size.
+Benchmarks: `bash benchmarks/install.sh` compares cold/warm source installs;
+`bash benchmarks/removal.sh` compares real Composer removals and total wall
+time. CI results and a private-repository workload are required before release.
 
 ## First run
 

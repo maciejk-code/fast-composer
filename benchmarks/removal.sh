@@ -1,31 +1,38 @@
 #!/usr/bin/env bash
+# Real Composer ZIP package removal, with synthetic node_modules.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BASE="$(mktemp -d)"
 trap 'rm -rf "$BASE"' EXIT
 COUNT="${BENCH_NODE_FILES:-40000}"
-mkdir -p "$BASE/standard/node_modules" "$BASE/fast/node_modules"
-php -r 'for($i=0;$i<(int)$argv[2];$i++){file_put_contents($argv[1]."/node_modules/file-".$i,"fixture");}' "$BASE/standard" "$COUNT"
-cp -R "$BASE/standard/node_modules/." "$BASE/fast/node_modules/"
-php -r 'file_put_contents($argv[1],json_encode(["rm"=>"/bin/rm","paths"=>[$argv[2]]]));' "$BASE/manifest.json" "$BASE/fast"
-now() { php -r 'echo microtime(true);'; }
-report() { php -r 'printf("%s: %.3f s\n",$argv[1],$argv[3]-$argv[2]);' "$1" "$2" "$3" | tee -a "$BASE/results"; }
-start="$(now)"
-rm -rf "$BASE/standard"
-report "Standard blocking deletion" "$start" "$(now)"
-start="$(now)"
-FAST_COMPOSER_REMOVE_MANIFEST="$BASE/manifest.json" php "$ROOT/bin/remove-package-worker.php" -rf "$BASE/fast"
-report "Deferred blocking deletion" "$start" "$(now)"
-test ! -e "$BASE/fast"
-mkdir "$BASE/fast"
-touch "$BASE/fast/replacement"
-deadline=$((SECONDS + 60))
-while compgen -G "$BASE/.fast-composer-trash-*" >/dev/null; do
-  if ((SECONDS >= deadline)); then echo "Deferred cleanup timed out" >&2; exit 1; fi
-  sleep 0.02
+export COMPOSER_ALLOW_SUPERUSER=1 COMPOSER_NO_INTERACTION=1
+mkdir "$BASE/package"
+printf '{"name":"bench/package","version":"1.0.0"}\n' > "$BASE/package/composer.json"
+(cd "$BASE" && zip -qr package.zip package)
+for mode in standard fast; do
+  project="$BASE/$mode"
+  mkdir "$project"
+  (
+    cd "$project"
+    export COMPOSER_CACHE_DIR="$BASE/cache-$mode"
+    php -r '$p=["name"=>"bench/root","repositories"=>[["packagist.org"=>false],["type"=>"package","package"=>["name"=>"bench/package","version"=>"1.0.0","dist"=>["type"=>"zip","url"=>$argv[1]]]]],"require"=>["bench/package"=>"1.0.0"]];file_put_contents("composer.json",json_encode($p));' "$BASE/package.zip"
+    composer update --no-audit --no-interaction --no-plugins --no-scripts
+    mkdir vendor/bench/package/node_modules
+    php -r 'for($i=0;$i<(int)$argv[1];$i++){file_put_contents("vendor/bench/package/node_modules/file-".$i,"fixture");}' "$COUNT"
+    php -r '$p=json_decode(file_get_contents("composer.json"),true);$p["require"]=(object)[];file_put_contents("composer.json",json_encode($p));'
+    composer update --no-install --no-audit --no-interaction --no-plugins --no-scripts
+    start="$(php -r 'echo microtime(true);')"
+    if [[ "$mode" == fast ]]; then
+      php "$ROOT/bin/fast-composer" install --no-interaction --no-plugins --no-scripts
+    else
+      composer install --no-interaction --no-plugins --no-scripts
+    fi
+    end="$(php -r 'echo microtime(true);')"
+    test ! -e vendor/bench/package
+    if compgen -G '.fast-composer-trash-*' >/dev/null; then exit 1; fi
+    php -r 'printf("%s total removal: %.3f s\n",$argv[1],$argv[3]-$argv[2]);' "$mode" "$start" "$end" | tee -a "$BASE/results"
+  )
 done
-report "Deferred total cleanup" "$start" "$(now)"
-test -f "$BASE/fast/replacement"
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   { echo '### Package removal benchmark'; echo '~~~'; cat "$BASE/results"; echo '~~~'; } >> "$GITHUB_STEP_SUMMARY"
 fi

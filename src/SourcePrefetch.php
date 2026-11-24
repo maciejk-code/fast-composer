@@ -17,7 +17,7 @@ final class SourcePrefetch
 {
     /**
      * @param list<string> $args
-     * @param list<string> $operationNames
+     * @param array<string,array{?string,?string}> $operationNames
      * @return array{int,int}|null successful and failed mirror groups; null when bypassed
      */
     public static function run(string $root, array $args, Config $config, string $cache, array $operationNames): ?array
@@ -38,7 +38,7 @@ final class SourcePrefetch
         }
         $groups = [];
         foreach (self::candidates($lock, $installed, $installedPath, $noDev, $config->get('preferred-install'), $args) as $package) {
-            if (!in_array($package['name'], $operationNames, true)) {
+            if (($operationNames[$package['name']] ?? null) !== [$package['source']['url'], $package['source']['reference']]) {
                 continue;
             }
             $config->prohibitUrlByConfig($package['source']['url']);
