@@ -67,9 +67,17 @@ final class AcceleratedComposerApplication extends Application
                 $this->cache = InstallCache::open($this->root, $config);
                 if ($this->cache !== null) {
                     $result = SourcePrefetch::run($this->root, $this->args, $config, $this->cache->path, $names);
-                    if ($result !== null && $result[0] > 0 && $result[1] === 0) {
+                    if ($result !== null && ($result[0] > 0 || $result[2] > 0) && $result[1] === 0) {
                         $config->merge(['config' => ['cache-vcs-dir' => $this->cache->path]], 'fast-composer private install cache');
-                        $event->getIO()->writeError(sprintf('[fast-composer] prefetched %d Git mirrors', $result[0]));
+                        if ($result[0] > 0) {
+                            $event->getIO()->writeError(sprintf('[fast-composer] prefetched %d Git mirrors', $result[0]));
+                        }
+                        if ($result[2] > 0) {
+                            $event->getIO()->writeError(sprintf('[fast-composer] reused %d warm Git mirrors without workers', $result[2]));
+                        }
+                        if ($result[3] > 0) {
+                            $event->getIO()->writeError(sprintf('[fast-composer] delegated %d remaining mirrors to Composer', $result[3]));
+                        }
                     } elseif ($result !== null && $result[1] > 0) {
                         $event->getIO()->writeError('[fast-composer] prefetch workers failed; continuing with Composer');
                     }

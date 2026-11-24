@@ -27,7 +27,27 @@ jobs:
         run: bash benchmarks/remote-latency.sh
       - name: Private-VCS-like workload
         run: bash benchmarks/private-vcs-like.sh
-      - name: Cold and warm install benchmark
+  install-benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          tools: composer:2.10.3
+          coverage: none
+          extensions: posix, phar, zip
+      - run: composer install --no-interaction --prefer-dist
+      - name: Cold and warm install benchmark (68 SSH repositories)
+        env:
+          BENCH_INSTALL_PACKAGES: '68'
+          BENCH_INSTALL_DELAY: '0.15'
+          FAST_COMPOSER_ASSERT_ACCELERATION: '1'
         run: bash benchmarks/install.sh
-      - name: Large node_modules removal benchmark
+      - name: Large node_modules removal benchmark (6 GiB)
+        env:
+          BENCH_NODE_FILES: '120000'
+          BENCH_NODE_FILE_BYTES: '53688'
+          FAST_COMPOSER_ASSERT_ACCELERATION: '1'
         run: bash benchmarks/removal.sh

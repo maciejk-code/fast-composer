@@ -42,7 +42,12 @@ measure() {
   COMPOSER_CACHE_DIR="$cache" "$@" install --no-interaction --no-plugins --no-scripts --no-progress 2>&1 | tee "$BASE/install.log"
   end="$(php -r 'echo microtime(true);')"
   if [[ "${FAST_COMPOSER_ASSERT_ACCELERATION:-0}" == 1 && "$label" == "Fast Composer"* ]]; then
-    grep -Fq "[fast-composer] prefetched" "$BASE/install.log"
+    if [[ "$label" == "Fast Composer cold" ]]; then
+      grep -Fq "[fast-composer] prefetched" "$BASE/install.log"
+    else
+      grep -Fq "[fast-composer] reused $COUNT warm Git mirrors without workers" "$BASE/install.log"
+      if grep -Fq "[fast-composer] prefetched" "$BASE/install.log"; then exit 1; fi
+    fi
   fi
   cmp composer.lock "$BASE/expected.lock"
   php -r '$l=json_decode(file_get_contents("composer.lock"),true);$i=json_decode(file_get_contents("vendor/composer/installed.json"),true);$r=array_column($i["packages"],"source","name");foreach($l["packages"] as $p){if(($r[$p["name"]]["reference"]??null)!==$p["source"]["reference"]){exit(1);}}'

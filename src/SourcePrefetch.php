@@ -18,7 +18,7 @@ final class SourcePrefetch
     /**
      * @param list<string> $args
      * @param array<string,array{?string,?string}> $operationNames
-     * @return array{int,int}|null successful and failed mirror groups; null when bypassed
+     * @return array{int,int,int,int}|null prefetched, failed, cache hits, deferred to Composer
      */
     public static function run(string $root, array $args, Config $config, string $cache, array $operationNames): ?array
     {
@@ -46,12 +46,21 @@ final class SourcePrefetch
             $groups[$key][] = $package;
         }
         $commands = [];
+        $hits = 0;
+        $manifest = $cache.'/.fast-composer-prefetch.json';
+        $records = self::readRecords($manifest);
         foreach ($groups as $key => $packages) {
             // Composer's cache key is lossy. Do not concurrently or speculatively
             // share a cache directory between different URL spellings.
             if (count(array_unique(array_column(array_column($packages, 'source'), 'url'))) !== 1) {
                 continue;
             }
+            $record = self::cacheRecord($cache.'/'.$key, $packages);
+            if ($record !== null && ($records[$key] ?? null) === $record) {
+                $hits++;
+                continue;
+            }
+            unset($records[$key]);
             $names = array_column($packages, 'name');
             $commands[$key] = [[
                 PHP_BINARY, '-r',
@@ -61,9 +70,88 @@ final class SourcePrefetch
                 ...$names,
             ], $root, ['GIT_TERMINAL_PROMPT' => '0', 'SSH_ASKPASS_REQUIRE' => 'never']];
         }
-        $results = Process::runMany($commands);
-        $success = count(array_filter($results, static fn (array $result): bool => $result[0] === 0));
-        return [$success, count($results) - $success];
+        $jobs = self::workerCount(count($commands), Process::defaultJobs());
+        if ($jobs < 2) {
+            // No parallelism to gain. Native Composer verifies/syncs any missing mirror
+            // in the private cache if we already have warm hits, otherwise its own cache.
+            return [0, 0, $hits, count($commands)];
+        }
+        $results = Process::runMany($commands, $jobs);
+        $success = 0;
+        foreach ($results as $key => $result) {
+            if ($result[0] === 0) {
+                $success++;
+                $record = self::cacheRecord($cache.'/'.$key, $groups[$key]);
+                if ($record !== null) {
+                    $records[$key] = $record;
+                }
+            }
+        }
+        try {
+            // Advisory only. A stale/missing record must never bypass native Git validation.
+            JsonFile::atomicWrite($manifest, json_encode($records, JSON_THROW_ON_ERROR), true);
+        } catch (\Throwable) {
+            // A failed optimization record does not affect install correctness.
+        }
+        return [$success, count($results) - $success, $hits, 0];
+    }
+
+    /** Avoid spinning up PHP/Composer workers when there is nothing to parallelize. */
+    public static function workerCount(int $missing, int $limit): int
+    {
+        return $missing < 2 || $limit < 2 ? 0 : min($missing, $limit);
+    }
+
+    /** @return array<string,mixed> */
+    private static function readRecords(string $manifest): array
+    {
+        if (is_link($manifest) || !is_file($manifest) || filesize($manifest) > 4 * 1024 * 1024) {
+            return [];
+        }
+        try {
+            return JsonFile::read($manifest);
+        } catch (\Throwable) {
+            return [];
+        }
+    }
+
+    /**
+     * A hint that this exact URL/ref/version group was prefetched successfully.
+     * Composer still independently validates the commit and branch/tag before using it.
+     *
+     * @param list<array> $packages
+     * @return array{fingerprint:string,dev:int,ino:int,config:string}|null
+     */
+    public static function cacheRecord(string $path, array $packages): ?array
+    {
+        clearstatcache(true, $path);
+        $configPath = $path.'/config';
+        if (
+            !is_dir($path) || is_link($path) || !is_file($configPath) || is_link($configPath)
+            || !is_dir($path.'/objects') || is_link($path.'/objects')
+        ) {
+            return null;
+        }
+        $stat = @lstat($path);
+        $config = @hash_file('sha256', $configPath);
+        if ($stat === false || $config === false) {
+            return null;
+        }
+        $targets = [];
+        foreach ($packages as $package) {
+            $targets[] = hash('sha256', json_encode([
+                $package['source']['url'],
+                $package['source']['reference'],
+                $package['version'],
+            ], JSON_THROW_ON_ERROR));
+        }
+        sort($targets, SORT_STRING);
+        return [
+            'fingerprint' => hash('sha256', implode('', $targets)),
+            'dev' => $stat['dev'],
+            'ino' => $stat['ino'],
+            'config' => $config,
+        ];
     }
 
     /** @param list<string> $args */

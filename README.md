@@ -129,12 +129,20 @@ Concurrent same-user filesystem mutation is unsupported; PHP path operations
 cannot provide an absolute race-free guarantee.
 
 Opt out with `FAST_COMPOSER_PREFETCH=0` or `FAST_COMPOSER_ASYNC_REMOVE=0`.
-`FAST_COMPOSER_JOBS` controls prefetch concurrency.
+`FAST_COMPOSER_JOBS` caps prefetch concurrency (default 8). Already warmed
+mirror groups use advisory records tied to the exact URL/ref/version, mirror
+identity and config; no extra PHP workers are launched for those groups.
+Native Composer still checks all refs and branch/tag requirements. One remaining
+miss is delegated to Composer; multiple misses use at most the configured
+worker limit.
 The dirty-package preservation overlay still delegates to standard Composer.
 
 Benchmarks: `bash benchmarks/install.sh` compares cold/warm source installs;
 `bash benchmarks/removal.sh` compares real Composer removals and total wall
-time. CI results and a private-repository workload are required before release.
+time. The dedicated install-benchmark job runs 68 local SSH transport fixtures
+with 150 ms injected latency and 120,000 generated files (~6 GiB). These are
+synthetic workloads, not measurements on real private repositories. CI results
+and real-project testing are required before release.
 
 ## First run
 
