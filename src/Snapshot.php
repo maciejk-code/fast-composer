@@ -191,7 +191,11 @@ final class Snapshot
         return $this->refreshRepositories($snapshot, $matches, $rootConfig);
     }
 
-    /** Refresh and rehydrate the selected repositories through one shared path. */
+    /**
+     * Refresh and rehydrate the selected repositories through one shared path.
+     *
+     * @param list<string> $urls
+     */
     private function refreshRepositories(array &$snapshot, array $urls, array $rootConfig): int
     {
         $declared = $this->declaredRepositories($rootConfig);
