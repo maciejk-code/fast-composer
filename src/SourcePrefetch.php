@@ -8,6 +8,7 @@ use Composer\Factory;
 use Composer\IO\NullIO;
 use Composer\Util\Filesystem;
 use Composer\Util\Git;
+use Composer\Util\HttpDownloader;
 use Composer\Util\ProcessExecutor;
 use Composer\Util\Url;
 
@@ -33,7 +34,7 @@ final class SourcePrefetch
         $lock = JsonFile::read($root.'/composer.lock');
         $noDev = in_array('--no-dev', $args, true) || (bool) getenv('COMPOSER_NO_DEV');
         $groups = [];
-        foreach (self::candidates($lock, $installed, $installedPath, $noDev) as $package) {
+        foreach (self::candidates($lock, $installed, $installedPath, $noDev, $config->get('preferred-install'), $args) as $package) {
             $key = self::cacheKey($package['source']['url']);
             $groups[$key][] = $package;
         }
@@ -79,9 +80,9 @@ final class SourcePrefetch
     }
 
     /**
-     * @return list<array> locked source-only SSH packages not already installed at the target
+     * @return list<array> locked remote Git packages expected to install from source
      */
-    public static function candidates(array $lock, array $installed, string $installedPath, bool $noDev): array
+    public static function candidates(array $lock, array $installed, string $installedPath, bool $noDev, mixed $preference = 'dist', array $args = []): array
     {
         $byName = [];
         foreach ($installed['packages'] ?? [] as $package) {
@@ -97,16 +98,18 @@ final class SourcePrefetch
             $reference = $source['reference'] ?? '';
             if (($source['type'] ?? null) !== 'git'
                 || !is_string($url)
-                || !self::isSsh($url)
+                || !self::isRemoteGit($url)
                 || !is_string($reference)
                 || !preg_match('/^[a-f0-9]{40}$/i', $reference)
-                || !empty($package['dist']['url'])
                 || !is_string($package['name'] ?? null)
                 || !is_string($package['version'] ?? null)
             ) {
                 continue;
             }
             $current = $byName[$package['name']] ?? [];
+            if (!self::prefersSource($package, $current, $preference, $args)) {
+                continue;
+            }
             $relative = $current['install-path'] ?? null;
             if (($current['version'] ?? null) === $package['version']
                 && ($current['source']['reference'] ?? null) === $reference
@@ -122,8 +125,54 @@ final class SourcePrefetch
         return $result;
     }
 
-    private static function isSsh(string $url): bool
+    /** Predict Composer's source choice without changing its actual download behavior. */
+    private static function prefersSource(array $package, array $current, mixed $preference, array $args): bool
     {
+        if (empty($package['dist']['type']) || empty($package['dist']['url'])) {
+            return true;
+        }
+        $isDev = static fn (string $version): bool => str_starts_with(strtolower($version), 'dev-')
+            || str_ends_with(strtolower($version), '-dev');
+        $dev = $isDev($package['version']);
+        $previous = $current['installation-source'] ?? null;
+        if ($previous === 'source') {
+            return true;
+        }
+        if ($previous === 'dist' && !(!$isDev((string) ($current['version'] ?? '')) && $dev)) {
+            return false;
+        }
+        $override = null;
+        foreach ($args as $index => $arg) {
+            if ($arg === '--prefer-source' || $arg === '--prefer-dist') {
+                $override = substr($arg, 9);
+            } elseif (str_starts_with($arg, '--prefer-install=')) {
+                $override = substr($arg, 17);
+            } elseif ($arg === '--prefer-install') {
+                $override = $args[$index + 1] ?? null;
+            }
+        }
+        if ($override === 'source' || $override === 'dist') {
+            return $override === 'source';
+        }
+        if ($override !== 'auto' && is_string($preference) && $preference !== 'auto') {
+            return $preference === 'source';
+        }
+        if (is_array($preference)) {
+            foreach ($preference as $pattern => $value) {
+                if (preg_match('{^'.str_replace('\\*', '.*', preg_quote((string) $pattern, '{')).'$}i', $package['name'])) {
+                    return $value === 'source' || ($value === 'auto' && $dev);
+                }
+            }
+        }
+        return $dev;
+    }
+
+    private static function isRemoteGit(string $url): bool
+    {
+        // HTTPS without embedded credentials; Composer supplies configured credentials.
+        if (preg_match('~^https://[a-zA-Z0-9][a-zA-Z0-9.-]*(?::[0-9]+)?/[^\s?#]+$~D', $url) === 1) {
+            return true;
+        }
         // Only unambiguous SSH URLs without embedded passwords or option-like hosts.
         return preg_match('~^(?:ssh://[a-zA-Z0-9_.-]+@[a-zA-Z0-9][a-zA-Z0-9.-]*(?::[0-9]+)?/|[a-zA-Z0-9_.-]+@[a-zA-Z0-9][a-zA-Z0-9.-]*:)[^\s]+$~D', $url) === 1;
     }
@@ -135,7 +184,7 @@ final class SourcePrefetch
     }
 
     /** @return array{Config,NullIO} */
-    private static function configuration(string $root): array
+    public static function configuration(string $root): array
     {
         $io = new NullIO();
         $config = Factory::createConfig($io, $root);
@@ -166,7 +215,7 @@ final class SourcePrefetch
                 return 1;
             }
             $lock = JsonFile::read($root.'/composer.lock');
-            $packages = self::candidates($lock, [], '', false);
+            $packages = self::candidates($lock, [], '', false, 'source');
             $packages = array_values(array_filter(
                 $packages,
                 static fn (array $package): bool => in_array($package['name'], $names, true)
@@ -199,6 +248,7 @@ final class SourcePrefetch
                 $process = new ProcessExecutor($io);
                 Git::cleanEnv($process);
                 $git = new Git($io, $config, $process, new Filesystem($process));
+                $git->setHttpDownloader(new HttpDownloader($io, $config));
                 foreach ($packages as $package) {
                     if (!$git->fetchRefOrSyncMirror($url, $path.'/', $package['source']['reference'], $package['version'])) {
                         return 1;

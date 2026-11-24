@@ -105,11 +105,6 @@ final class Application
 
             // Composer remains responsible for every installation operation.
             if ($cmd === 'install') {
-                $prefetch = in_array('--prefetch-source', $args, true);
-                $args = array_values(array_filter(
-                    $args,
-                    static fn (string $arg): bool => $arg !== '--prefetch-source'
-                ));
                 if (in_array('--skip-dirty-packages', $args, true)) {
                     $composerArgs = array_values(array_filter(
                         $args,
@@ -117,10 +112,10 @@ final class Application
                     ));
                     return (new PreservedInstall($root))->run($composerArgs);
                 }
-                if ($prefetch) {
+                if (getenv('FAST_COMPOSER_PREFETCH') !== '0') {
                     try {
                         $result = SourcePrefetch::run($root, $args);
-                        if ($result !== null) {
+                        if ($result !== null && array_sum($result) > 0) {
                             $this->log(sprintf(
                                 'source cache prefetch: %d successful, %d failed; running Composer',
                                 $result[0],
@@ -599,10 +594,10 @@ final class Application
         echo "  fast-composer refresh\n";
         echo "  fast-composer verify\n";
         echo "  fast-composer status\n";
-        echo "  fast-composer install [--prefetch-source] [--skip-dirty-packages] [composer options]\n";
+        echo "  fast-composer install [--skip-dirty-packages] [composer options]\n";
         echo "  fast-composer --version\n\n";
         echo "Fast update/require operations always imply --no-install.\n";
-        echo "Install delegates to Composer. --prefetch-source warms SSH Git source-only packages in parallel.\n";
+        echo "Install warms Composer's Git cache in parallel by default.\n";
         echo "--skip-dirty-packages preserves local Git source changes (all package types) when metadata is compatible.\n";
         echo "The first run fetches every VCS repository in parallel into shared local mirrors; no regular Composer solve.\n";
         echo "FAST_COMPOSER_TTL controls broad full-update ref validation (default: 300 seconds).\n";
