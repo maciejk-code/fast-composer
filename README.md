@@ -79,7 +79,7 @@ CI stays unchanged:
 composer install
 ```
 
-`fast-composer install` delegates to standard Composer unless local checkout protection is explicitly enabled:
+`fast-composer install` accelerates Git downloads and eligible package removal while Composer performs the installation. Local checkout protection is separately available:
 
 ```bash
 fast-composer install --skip-dirty-packages
@@ -103,6 +103,55 @@ intentional and always reported. Never use this flag for CI, production, or rele
 Once local work has been committed/pushed or backed up, run plain `composer install` to
 restore reproducibility. Composer plugins and scripts still run unless explicitly disabled
 by their own Composer options.
+
+## Faster install (default)
+
+```bash
+fast-composer install
+```
+
+On stable Composer 2.x phars, acceleration is negotiated at runtime rather than
+by an exact version or minor-version range. It checks the install-event and
+subclass signatures before loading any adapter, and tests Git prefetch and
+scoped deletion independently. A missing or incompatible API falls back for
+that optimization only. Unknown major versions and prereleases remain on
+ordinary Composer until reviewed. CI exercises several 2.x versions and macOS.
+Use the latest security-patched Composer release; compatibility does not imply
+that an older Composer release is safe. No extra flag is required.
+Git prefetch uses the approved install/update operations and source preferences
+(including dist-capable packages), with a private, per-project VCS cache and
+a lock held through installation. Plain Composer keeps its own cache.
+Existing shared VCS caches are not migrated; first use can be slower. Explicit
+COMPOSER_CACHE_VCS_DIR, read-only cache, dry-run, offline, custom manifests and
+download-modifying plugin installation bypass prefetch. Dist downloads use
+Composer's native parallel HTTP downloads.
+
+On Linux/macOS, built-in Git and ZIP downloaders use a scoped filesystem
+for actual deletion calls on installed update/removal package paths containing
+node_modules. The directory must be within the project, canonical, non-symlinked,
+on the same filesystem and still match its recorded identity. No PATH shim,
+shell interpolation or speculative checkout movement. Cleanup runs in parallel
+with installation and is joined before normal exit; errors are reported and
+failed quarantine directories retained. In-place Git updates need not delete
+node_modules. Custom downloaders and unsupported paths use standard removal.
+Concurrent same-user filesystem mutation is unsupported; PHP path operations
+cannot provide an absolute race-free guarantee.
+
+Opt out with `FAST_COMPOSER_PREFETCH=0` or `FAST_COMPOSER_ASYNC_REMOVE=0`.
+`FAST_COMPOSER_JOBS` caps prefetch concurrency (default 8). Already warmed
+mirror groups use advisory records tied to the exact URL/ref/version, mirror
+identity and config; no extra PHP workers are launched for those groups.
+Native Composer still checks all refs and branch/tag requirements. One remaining
+miss is delegated to Composer; multiple misses use at most the configured
+worker limit.
+The dirty-package preservation overlay still delegates to standard Composer.
+
+Benchmarks: `bash benchmarks/install.sh` compares cold/warm source installs;
+`bash benchmarks/removal.sh` compares real Composer removals and total wall
+time. The dedicated install-benchmark job runs 68 local SSH transport fixtures
+with 150 ms injected latency and 120,000 generated files (~6 GiB). These are
+synthetic workloads, not measurements on real private repositories. CI results
+and real-project testing are required before release.
 
 ## First run
 

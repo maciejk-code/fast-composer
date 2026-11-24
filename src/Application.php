@@ -137,8 +137,7 @@ final class Application
                 return 0;
             }
 
-            // By default installation remains standard Composer. The opt-in local-only mode
-            // preserves modified Git source checkouts, regardless of the package type.
+            // Composer remains responsible for every installation operation.
             if ($cmd === 'install') {
                 if (in_array('--skip-dirty-packages', $args, true)) {
                     $composerArgs = array_values(array_filter(
@@ -146,6 +145,20 @@ final class Application
                         static fn (string $arg): bool => $arg !== '--skip-dirty-packages'
                     ));
                     return (new PreservedInstall($root))->run($composerArgs);
+                }
+                if (
+                    SourcePrefetch::enabled($args) && is_file($root.'/composer.lock')
+                    && (getenv('FAST_COMPOSER_PREFETCH') !== '0' || getenv('FAST_COMPOSER_ASYNC_REMOVE') !== '0')
+                ) {
+                    $code = InProcessComposer::run($args, $root, [], static function () use ($root, $args): \Composer\Console\Application {
+                        if (!InstallCompatibility::supportsApplication()) {
+                            return new \Composer\Console\Application();
+                        }
+                        return new AcceleratedComposerApplication($root, $args);
+                    });
+                    if ($code !== null) {
+                        return $code;
+                    }
                 }
                 return $this->delegateComposer($args, $root);
             }
@@ -668,7 +681,8 @@ final class Application
         echo "  fast-composer --version\n\n";
         echo "Fast update/require operations always imply --no-install.\n";
         echo "The composer update subcommand follows a verified fast solve with a standard install (different script lifecycle).\n";
-        echo "Install normally delegates to Composer. --skip-dirty-packages preserves local Git source changes (all package types) when metadata is compatible.\n";
+        echo "Install warms Composer's Git cache in parallel and defers eligible package removal.\n";
+        echo "--skip-dirty-packages preserves local Git source changes (all package types) when metadata is compatible.\n";
         echo "The first run fetches every VCS repository in parallel into shared local mirrors; no regular Composer solve.\n";
         echo "FAST_COMPOSER_TTL controls broad full-update ref validation (default: 300 seconds).\n";
         echo "Cache warming refreshes Fast Composer's VCS snapshot, not standard Composer's cache.\n";
