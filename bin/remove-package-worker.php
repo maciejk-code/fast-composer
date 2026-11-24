@@ -6,7 +6,7 @@ $data = is_string($manifest) ? json_decode((string) @file_get_contents($manifest
 $rm = is_array($data) && is_string($data['rm'] ?? null) ? $data['rm'] : '/bin/rm';
 $args = array_slice($argv, 1);
 $runRm = static function (array $arguments) use ($rm): int {
-    $process = proc_open(array_merge([$rm], $arguments), [0 => STDIN, 1 => STDOUT, 2 => STDERR], $pipes);
+    $process = proc_open(array_merge([$rm], array_map('strval', array_values($arguments))), [0 => STDIN, 1 => STDOUT, 2 => STDERR], $pipes);
     return is_resource($process) ? proc_close($process) : 127;
 };
 

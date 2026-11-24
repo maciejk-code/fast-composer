@@ -8,7 +8,8 @@ final class AsyncPackageRemoval
     /** @param list<string> $args */
     public static function run(string $root, array $args, callable $delegate): int
     {
-        if (PHP_OS_FAMILY === 'Windows' || getenv('FAST_COMPOSER_ASYNC_REMOVE') === '0'
+        if (
+            PHP_OS_FAMILY === 'Windows' || getenv('FAST_COMPOSER_ASYNC_REMOVE') === '0'
             || !SourcePrefetch::enabled($args) || in_array('--download-only', $args, true)
             || !InProcessComposer::loadClasses()
         ) {
@@ -29,7 +30,8 @@ final class AsyncPackageRemoval
                 }
                 $manifest = $temp.'/manifest.json';
                 $shim = $temp.'/rm';
-                if (file_put_contents($manifest, json_encode(['rm' => $rm, 'paths' => $paths], JSON_THROW_ON_ERROR)) === false
+                if (
+                    file_put_contents($manifest, json_encode(['rm' => $rm, 'paths' => $paths], JSON_THROW_ON_ERROR)) === false
                     || file_put_contents($shim, "#!/bin/sh\nexec ".escapeshellarg(PHP_BINARY).' '
                         .escapeshellarg(__DIR__.'/../bin/remove-package-worker.php').' "$@"'."\n") === false
                     || !chmod($shim, 0700)
@@ -70,7 +72,8 @@ final class AsyncPackageRemoval
             }
             $raw = dirname($installedPath).'/'.$relative;
             $path = realpath($raw);
-            if ($path === false || !str_starts_with($path, $realRoot.'/')
+            if (
+                $path === false || !str_starts_with($path, $realRoot.'/')
                 || is_link($raw) || !is_dir($path.'/node_modules') || is_link($path.'/node_modules')
             ) {
                 continue;

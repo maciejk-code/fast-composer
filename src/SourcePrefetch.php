@@ -63,13 +63,15 @@ final class SourcePrefetch
     public static function enabled(array $args): bool
     {
         $manifest = getenv('COMPOSER');
-        if (($manifest !== false && $manifest !== '' && $manifest !== 'composer.json')
+        if (
+            ($manifest !== false && $manifest !== '' && $manifest !== 'composer.json')
             || (bool) getenv('COMPOSER_DISABLE_NETWORK')
         ) {
             return false;
         }
         foreach ($args as $arg) {
-            if (in_array($arg, ['--dry-run', '--no-cache', '--no-install', '--help', '-h', '-d', '--'], true)
+            if (
+                in_array($arg, ['--dry-run', '--no-cache', '--no-install', '--help', '-h', '-d', '--'], true)
                 || str_starts_with($arg, '--working-dir')
                 || str_starts_with($arg, '-d')
             ) {
@@ -96,7 +98,8 @@ final class SourcePrefetch
             $source = $package['source'] ?? [];
             $url = $source['url'] ?? '';
             $reference = $source['reference'] ?? '';
-            if (($source['type'] ?? null) !== 'git'
+            if (
+                ($source['type'] ?? null) !== 'git'
                 || !is_string($url)
                 || !self::isRemoteGit($url)
                 || !is_string($reference)
@@ -111,7 +114,8 @@ final class SourcePrefetch
                 continue;
             }
             $relative = $current['install-path'] ?? null;
-            if (($current['version'] ?? null) === $package['version']
+            if (
+                ($current['version'] ?? null) === $package['version']
                 && ($current['source']['reference'] ?? null) === $reference
                 && ($current['source']['url'] ?? null) === $url
                 && is_string($relative)
