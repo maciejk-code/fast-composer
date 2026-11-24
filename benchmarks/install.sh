@@ -37,6 +37,10 @@ cp composer.lock "$BASE/expected.lock"
 measure() {
   local label="$1" cache="$2"; shift 2
   rm -rf vendor
+  if [[ "$label" == *" cold" ]]; then
+    mkdir -p vendor/bench/package-1/node_modules
+    printf 'generated fixture\n' > vendor/bench/package-1/node_modules/old
+  fi
   local start end
   start="$(php -r 'echo microtime(true);')"
   COMPOSER_CACHE_DIR="$cache" "$@" install --no-interaction --no-plugins --no-scripts --no-progress 2>&1 | tee "$BASE/install.log"
@@ -44,11 +48,14 @@ measure() {
   if [[ "${FAST_COMPOSER_ASSERT_ACCELERATION:-0}" == 1 && "$label" == "Fast Composer"* ]]; then
     if [[ "$label" == "Fast Composer cold" ]]; then
       grep -Fq "[fast-composer] prefetched" "$BASE/install.log"
+      grep -Fq "[fast-composer] deferred package removal" "$BASE/install.log"
     else
       grep -Fq "[fast-composer] reused $COUNT warm Git mirrors without workers" "$BASE/install.log"
       if grep -Fq "[fast-composer] prefetched" "$BASE/install.log"; then exit 1; fi
     fi
   fi
+  test ! -e vendor/bench/package-1/node_modules
+  if compgen -G '.fast-composer-trash-*' >/dev/null; then exit 1; fi
   cmp composer.lock "$BASE/expected.lock"
   php -r '$l=json_decode(file_get_contents("composer.lock"),true);$i=json_decode(file_get_contents("vendor/composer/installed.json"),true);$r=array_column($i["packages"],"source","name");foreach($l["packages"] as $p){if(($r[$p["name"]]["reference"]??null)!==$p["source"]["reference"]){exit(1);}}'
   php -r 'printf("%s: %.3f s\n",$argv[1],$argv[3]-$argv[2]);' "$label" "$start" "$end" | tee -a "$BASE/results"

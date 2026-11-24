@@ -45,6 +45,7 @@ final class AcceleratedComposerApplication extends Application
         $operations = $transaction->getOperations();
         $names = [];
         $removals = [];
+        $installs = [];
         foreach ($operations as $operation) {
             if ($operation instanceof InstallOperation || $operation instanceof UpdateOperation) {
                 $target = $operation instanceof UpdateOperation ? $operation->getTargetPackage() : $operation->getPackage();
@@ -58,6 +59,9 @@ final class AcceleratedComposerApplication extends Application
                 $removals[] = $operation->getInitialPackage();
             } elseif ($operation instanceof UninstallOperation) {
                 $removals[] = $operation->getPackage();
+            } elseif ($operation instanceof InstallOperation) {
+                // Native VCS prepare(install) can empty an existing untracked checkout.
+                $installs[] = $operation->getPackage();
             }
         }
 
@@ -90,11 +94,11 @@ final class AcceleratedComposerApplication extends Application
         }
 
         if (
-            $removals !== [] && getenv('FAST_COMPOSER_ASYNC_REMOVE') !== '0'
+            ($removals !== [] || $installs !== []) && getenv('FAST_COMPOSER_ASYNC_REMOVE') !== '0'
             && !in_array('--download-only', $this->args, true) && InstallCompatibility::supportsRemoval()
         ) {
             try {
-                $this->removal = AsyncPackageRemoval::attach($this->root, $composer, $event->getIO(), $removals);
+                $this->removal = AsyncPackageRemoval::attach($this->root, $composer, $event->getIO(), $removals, $installs);
             } catch (\Throwable) {
                 $event->getIO()->writeError('[fast-composer] deferred removal unavailable; continuing with Composer');
             }

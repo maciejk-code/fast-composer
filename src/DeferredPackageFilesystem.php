@@ -21,6 +21,10 @@ final class DeferredPackageFilesystem extends Filesystem
 
     private function exactPath(string $path): ?string
     {
+        // Common custom installers return ./relative/path; leading ./ is harmless.
+        while (str_starts_with($path, './')) {
+            $path = substr($path, 2);
+        }
         $absolute = rtrim(str_starts_with($path, '/') ? $path : $this->root.'/'.$path, '/');
         clearstatcache(true);
         $real = realpath($absolute);
@@ -28,13 +32,13 @@ final class DeferredPackageFilesystem extends Filesystem
         return $real === $absolute && str_starts_with($real, $this->root.'/') ? $real : null;
     }
 
-    public function allow(string $path): void
+    public function allow(string $path, bool $wholePackage = true): void
     {
         $path = $this->exactPath($path);
         if ($path === null || !is_dir($path.'/node_modules') || is_link($path.'/node_modules')) {
             return;
         }
-        foreach ([$path, $path.'/node_modules'] as $candidate) {
+        foreach ($wholePackage ? [$path, $path.'/node_modules'] : [$path.'/node_modules'] as $candidate) {
             $stat = @lstat($candidate);
             if ($stat !== false && is_dir($candidate) && !is_link($candidate)) {
                 $this->allowed[$candidate] = ['dev' => $stat['dev'], 'ino' => $stat['ino']];

@@ -32,22 +32,24 @@ final class InstallCache
             return null;
         }
         $lockData = JsonFile::read($root.'/composer.lock');
-        $urls = [];
         $keys = [];
         foreach (LockFile::packages($lockData) as $package) {
             if (is_string($package['source']['url'] ?? null)) {
                 $url = $package['source']['url'];
                 $key = (string) preg_replace('{[^a-z0-9.]}i', '-', Url::sanitize($url));
-                if (isset($keys[$key]) && $keys[$key] !== $url) {
+                if (in_array($key, ['', '.', '..'], true) || (isset($keys[$key]) && $keys[$key] !== $url)) {
                     return null;
                 }
                 $keys[$key] = $url;
-                $urls[] = $url;
             }
         }
-        sort($urls, SORT_STRING);
-        // Distinct URL sets do not reuse a namespace with a lossy Composer cache key.
-        $path = $base.'/fast-composer-install-'.hash('sha256', $root."\0".implode("\0", $urls));
+        $project = realpath($root);
+        if ($project === false) {
+            return null;
+        }
+        // Stable across dependency changes. A new namespace avoids trusting old caches
+        // without a persistent key registry.
+        $path = $base.'/fast-composer-install-v2-'.hash('sha256', $project);
         if (!is_dir($path) && !@mkdir($path, 0700)) {
             return null;
         }
@@ -66,7 +68,54 @@ final class InstallCache
             fclose($lock);
             return null;
         }
-        return new self($path, $lock);
+        try {
+            if (!self::reserveKeys($path, $keys)) {
+                fclose($lock);
+                return null;
+            }
+            return new self($path, $lock);
+        } catch (\Throwable) {
+            fclose($lock);
+            return null;
+        }
+    }
+
+    /**
+     * Reserve Composer's lossy cache keys across the lifetime of the project cache.
+     * Called only with the operation lock held. No raw repository URL is persisted.
+     *
+     * @param array<string,string> $keys
+     */
+    private static function reserveKeys(string $path, array $keys): bool
+    {
+        $registry = $path.'/.url-keys.json';
+        if (is_link($registry) || (file_exists($registry) && !is_file($registry))) {
+            return false;
+        }
+        $known = JsonFile::readIfExists($registry);
+        foreach ($known as $digest) {
+            if (!is_string($digest) || preg_match('/^[a-f0-9]{64}$/D', $digest) !== 1) {
+                return false;
+            }
+        }
+        $next = $known;
+        foreach ($keys as $key => $url) {
+            $digest = hash('sha256', $url);
+            $mirror = $path.'/'.$key;
+            // A mirror without a matching registry entry may be from a native
+            // fallback URL or a partially removed registry. Never adopt it blindly.
+            if (isset($known[$key]) ? $known[$key] !== $digest : (file_exists($mirror) || is_link($mirror))) {
+                return false;
+            }
+            if (is_link($mirror) || (file_exists($mirror) && !is_dir($mirror))) {
+                return false;
+            }
+            $next[$key] = $digest;
+        }
+        if ($next !== $known || !is_file($registry)) {
+            JsonFile::atomicWrite($registry, json_encode($next, JSON_THROW_ON_ERROR), true);
+        }
+        return true;
     }
 
     public function close(): void

@@ -12,8 +12,11 @@ use Composer\Package\PackageInterface;
 /** Install the scoped filesystem only in the supported native downloaders. */
 final class AsyncPackageRemoval
 {
-    /** @param list<PackageInterface> $packages */
-    public static function attach(string $root, Composer $composer, IOInterface $io, array $packages): ?DeferredPackageFilesystem
+    /**
+     * @param list<PackageInterface> $packages
+     * @param list<PackageInterface> $installs
+     */
+    public static function attach(string $root, Composer $composer, IOInterface $io, array $packages, array $installs = []): ?DeferredPackageFilesystem
     {
         if (!in_array(PHP_OS_FAMILY, ['Linux', 'Darwin'], true) || !is_executable('/bin/rm')) {
             return null;
@@ -48,10 +51,19 @@ final class AsyncPackageRemoval
                 $process
             );
         }
-        foreach ($packages as $package) {
-            $path = $composer->getInstallationManager()->getInstallPath($package);
-            if ($path !== null) {
-                $filesystem->allow($path);
+        foreach ([[$packages, true], [$installs, false]] as [$candidates, $wholePackage]) {
+            foreach ($candidates as $package) {
+                try {
+                    $path = $composer->getInstallationManager()->getInstallPath($package);
+                    if (is_string($path) && $path !== '') {
+                        // For new installs, only optimize node_modules removal, not the
+                        // whole untracked package path. Composer chooses what to remove.
+                        $filesystem->allow($path, $wholePackage);
+                    }
+                } catch (\Throwable) {
+                    // An installer plugin may not be available until later in the transaction.
+                    // Do not guess a path or disable acceleration for unrelated packages.
+                }
             }
         }
         if ($git !== null) {

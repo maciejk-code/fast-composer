@@ -35,3 +35,12 @@ mkdir($package.'/node_modules', 0700, true);
 fc_assert($fs->removeDirectory($package), 'Ordinary removal after inode change');
 fc_assert(is_file($package.'-old/new'), 'Previously approved directory is untouched');
 fc_assert($fs->finish(), 'No stale cleanup');
+
+$orphan = $root.'/plugins/orphan';
+mkdir($orphan.'/node_modules', 0700, true);
+file_put_contents($orphan.'/node_modules/generated', 'data');
+file_put_contents($orphan.'/keep', 'native cleanup owns this');
+$fs->allow('./plugins/orphan', false);
+fc_assert($fs->removeDirectory($orphan.'/node_modules'), 'Existing install directory node_modules removed');
+fc_assert($fs->finish(), 'Existing install cleanup completed');
+fc_assert(is_file($orphan.'/keep'), 'Install-only approval did not move the whole checkout');
