@@ -7,7 +7,7 @@ permissions:
   contents: read
 jobs:
   test:
-    runs-on: ubuntu-24.04
+    runs-on: ubicloud-standard-2
     strategy:
       matrix:
         php: ['8.2','8.3','8.4']
@@ -24,7 +24,7 @@ jobs:
   # Everything beyond the unit tests runs through tests/ci.sh, so new checks and contracts
   # reach CI by editing that script, not this workflow.
   checks:
-    runs-on: ubuntu-24.04
+    runs-on: ubicloud-standard-2
     steps:
       - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
@@ -38,16 +38,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04
+          - os: ubicloud-standard-2
             composer: '2.6.6'
             prefetch: '0'
-          - os: ubuntu-24.04
+          - os: ubicloud-standard-2
             composer: '2.8.12'
             prefetch: '1'
-          - os: ubuntu-24.04
+          - os: ubicloud-standard-2
             composer: '2.9.5'
             prefetch: '1'
-          - os: ubuntu-24.04
+          - os: ubicloud-standard-2
             composer: '2.10.3'
             prefetch: '1'
           - os: macos-latest
