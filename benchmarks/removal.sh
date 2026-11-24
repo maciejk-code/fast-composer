@@ -23,7 +23,10 @@ for mode in standard fast; do
     composer update --no-install --no-audit --no-interaction --no-plugins --no-scripts
     start="$(php -r 'echo microtime(true);')"
     if [[ "$mode" == fast ]]; then
-      php "$ROOT/bin/fast-composer" install --no-interaction --no-plugins --no-scripts
+      php "$ROOT/bin/fast-composer" install --no-interaction --no-plugins --no-scripts 2>&1 | tee "$BASE/remove.log"
+      if [[ "${FAST_COMPOSER_ASSERT_ACCELERATION:-0}" == 1 ]]; then
+        grep -Fq "[fast-composer] deferred package removal" "$BASE/remove.log"
+      fi
     else
       composer install --no-interaction --no-plugins --no-scripts
     fi

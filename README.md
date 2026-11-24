@@ -101,9 +101,11 @@ by their own Composer options.
 fast-composer install
 ```
 
-On the tested Composer 2.10.3 phar, acceleration attaches to Composer's
-`PRE_OPERATIONS_EXEC` event, after lock/platform/policy validation. Other
-versions and unsupported modes use normal Composer. No extra flag is required.
+On stable Composer phars from 2.8.12 through 2.10.x, acceleration attaches to Composer's
+`PRE_OPERATIONS_EXEC` event, after lock/platform/policy validation. The compatibility matrix exercises 2.8.12, 2.9.5 and 2.10.3 on Linux and
+2.10.3 on macOS. Other versions and unsupported modes use normal Composer.
+Use the latest security-patched Composer release; compatibility does not imply
+that an older Composer release is safe. No extra flag is required.
 Git prefetch uses the approved install/update operations and source preferences
 (including dist-capable packages), with a private, per-project VCS cache and
 a lock held through installation. Plain Composer keeps its own cache.

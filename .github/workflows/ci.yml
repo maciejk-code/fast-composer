@@ -33,3 +33,36 @@ jobs:
           tools: composer:2.10.3
       - run: composer install --no-interaction --prefer-dist
       - run: bash tests/ci.sh cs analyse contracts
+  install-compatibility:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            composer: '2.8.12'
+          - os: ubuntu-24.04
+            composer: '2.9.5'
+          - os: ubuntu-24.04
+            composer: '2.10.3'
+          - os: macos-latest
+            composer: '2.10.3'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          tools: composer:${{ matrix.composer }}
+      - run: composer install --no-interaction --prefer-dist
+      - run: php tests/run.php
+      - name: Verify accelerated install, not just fallback
+        env:
+          BENCH_INSTALL_PACKAGES: '4'
+          BENCH_INSTALL_DELAY: '0.05'
+          FAST_COMPOSER_ASSERT_ACCELERATION: '1'
+        run: bash benchmarks/install.sh
+      - name: Verify scoped removal, not just fallback
+        env:
+          BENCH_NODE_FILES: '1000'
+          FAST_COMPOSER_ASSERT_ACCELERATION: '1'
+        run: bash benchmarks/removal.sh

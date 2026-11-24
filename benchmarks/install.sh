@@ -39,8 +39,11 @@ measure() {
   rm -rf vendor
   local start end
   start="$(php -r 'echo microtime(true);')"
-  COMPOSER_CACHE_DIR="$cache" "$@" install --no-interaction --no-plugins --no-scripts --no-progress
+  COMPOSER_CACHE_DIR="$cache" "$@" install --no-interaction --no-plugins --no-scripts --no-progress 2>&1 | tee "$BASE/install.log"
   end="$(php -r 'echo microtime(true);')"
+  if [[ "${FAST_COMPOSER_ASSERT_ACCELERATION:-0}" == 1 && "$label" == "Fast Composer"* ]]; then
+    grep -Fq "[fast-composer] prefetched" "$BASE/install.log"
+  fi
   cmp composer.lock "$BASE/expected.lock"
   php -r '$l=json_decode(file_get_contents("composer.lock"),true);$i=json_decode(file_get_contents("vendor/composer/installed.json"),true);$r=array_column($i["packages"],"source","name");foreach($l["packages"] as $p){if(($r[$p["name"]]["reference"]??null)!==$p["source"]["reference"]){exit(1);}}'
   php -r 'printf("%s: %.3f s\n",$argv[1],$argv[3]-$argv[2]);' "$label" "$start" "$end" | tee -a "$BASE/results"

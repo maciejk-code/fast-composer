@@ -97,15 +97,17 @@ final class DeferredPackageFilesystem extends Filesystem
             throw new \RuntimeException('Cannot start package cleanup; inspect '.$trash);
         }
         $this->pending[$trash] = $process;
+        fwrite(STDERR, "[fast-composer] deferred package removal\n");
         return true;
     }
 
-    public function removeDirectory(string $directory)
+    public function removeDirectory(string $directory): bool
     {
         return $this->defer($directory) || parent::removeDirectory($directory);
     }
 
-    public function removeDirectoryAsync(string $directory)
+    /** @return \React\Promise\PromiseInterface<bool> */
+    public function removeDirectoryAsync(string $directory): \React\Promise\PromiseInterface
     {
         return $this->defer($directory) ? \React\Promise\resolve(true) : parent::removeDirectoryAsync($directory);
     }
