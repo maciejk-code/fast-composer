@@ -126,7 +126,7 @@ final class Application
                         $this->log('source cache prefetch unavailable; running Composer normally');
                     }
                 }
-                return $this->delegateComposer($args, $root);
+                return AsyncPackageRemoval::run($root, $args, fn (): int => $this->delegateComposer($args, $root));
             }
 
             if (!in_array($cmd, ['update', 'require'], true)) {
@@ -597,7 +597,7 @@ final class Application
         echo "  fast-composer install [--skip-dirty-packages] [composer options]\n";
         echo "  fast-composer --version\n\n";
         echo "Fast update/require operations always imply --no-install.\n";
-        echo "Install warms Composer's Git cache in parallel by default.\n";
+        echo "Install warms Composer's Git cache in parallel and defers eligible package removal.\n";
         echo "--skip-dirty-packages preserves local Git source changes (all package types) when metadata is compatible.\n";
         echo "The first run fetches every VCS repository in parallel into shared local mirrors; no regular Composer solve.\n";
         echo "FAST_COMPOSER_TTL controls broad full-update ref validation (default: 300 seconds).\n";
