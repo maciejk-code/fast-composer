@@ -27,3 +27,7 @@ jobs:
         run: bash benchmarks/remote-latency.sh
       - name: Private-VCS-like workload
         run: bash benchmarks/private-vcs-like.sh
+      - name: Cold and warm install benchmark
+        run: bash benchmarks/install.sh
+      - name: Large node_modules removal benchmark
+        run: bash benchmarks/removal.sh

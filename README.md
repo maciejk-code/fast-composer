@@ -70,7 +70,7 @@ CI stays unchanged:
 composer install
 ```
 
-`fast-composer install` delegates to standard Composer unless local checkout protection is explicitly enabled:
+`fast-composer install` accelerates Git downloads and eligible package removal while Composer performs the installation. Local checkout protection is separately available:
 
 ```bash
 fast-composer install --skip-dirty-packages
@@ -95,27 +95,44 @@ Once local work has been committed/pushed or backed up, run plain `composer inst
 restore reproducibility. Composer plugins and scripts still run unless explicitly disabled
 by their own Composer options.
 
-## Optional parallel source downloads
+## Faster install (default)
 
 ```bash
-FAST_COMPOSER_JOBS=8 fast-composer install --prefetch-source
+fast-composer install
 ```
 
-This experimental, opt-in mode warms Composer's own VCS cache before invoking the
-original install command. It targets missing or changed Git packages without a
-dist archive using SSH URLs, including WordPress plugins installed outside vendor.
-It uses Composer's own Git mirror implementation, including its branch/tag checks,
-and groups packages by cache directory to avoid parallel writes to a single mirror.
+Parallel Git prefetch warms Composer's native VCS cache for missing/changed remote
+SSH and HTTPS Git packages expected to install from source, including packages
+that offer dist archives. Source selection follows CLI preferences, configured
+package patterns and the previously installed source where applicable.
+Ordinary dist downloads remain Composer's own parallel HTTP downloads.
 
-It does not edit the lock, installed metadata or working checkouts. Unchanged
-installed packages are skipped. Failed prefetches fall back to ordinary Composer,
-which remains responsible for the final exit status. Composer's configured cache
-directory, process timeout and URL policy are respected. Offline, no-cache,
-dry-run, custom-manifest and read-only-cache modes bypass warming.
-Combining this flag with `--skip-dirty-packages` currently bypasses warming to
-avoid fetching revisions that the temporary preservation lock will not install.
-Use regular Composer if another process is concurrently writing the same VCS cache.
-Packages with dist archives and non-SSH URLs are outside the initial scope.
+On Unix, an installed package inside the project with a real `node_modules`
+directory is eligible for deferred removal. Only when Composer actually invokes
+`rm -rf` for that exact package path, a temporary PATH shim atomically renames the
+whole package to a private sibling directory and launches deletion of that sibling
+without waiting. The replacement package is never deleted by the cleanup worker.
+There is no speculative move of a live checkout, no cross-filesystem copy and no
+deletion of node_modules when Composer updates a checkout in place. Other rm
+commands pass through unchanged. If cleanup fails, the reported
+`.fast-composer-trash-*` directory may remain and can be removed manually.
+The shim is inherited by Composer child scripts; avoid concurrent edits/install
+processes in the same project. Non-Unix systems use normal deletion.
+
+Failed prefetches fall back to regular Composer. Dry-run, no-cache, offline and
+custom-manifest modes bypass both optimizations; the dirty-checkout preservation
+overlay currently uses standard Composer directly. Composer remains authoritative
+for installation and exit status. No extra flag is required.
+
+Opt out for troubleshooting with `FAST_COMPOSER_PREFETCH=0` or
+`FAST_COMPOSER_ASYNC_REMOVE=0`. `FAST_COMPOSER_JOBS` controls prefetch concurrency.
+Avoid simultaneous external Composer processes writing the same VCS cache.
+
+Benchmark: `bash benchmarks/install.sh` compares cold and warm VCS caches using
+a deterministic SSH fixture and injected remote latency, and checks installed
+revisions. `bash benchmarks/removal.sh` measures blocking and total deletion
+time for a large synthetic node_modules directory. Real performance depends
+on disk, network and repository size.
 
 ## First run
 
