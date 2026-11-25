@@ -15,6 +15,8 @@
 
 ### Performance
 
+- Run independent clean Git source status checks concurrently; native Composer still checks versions, unpushed changes and any dirty or failed checkout.
+
 - VCS refresh uses a persistent shallow mirror per repository (in the Fast Composer cache): one `git fetch` both lists refs and downloads new tips, replacing the `ls-remote` + throw-away clone pair. The first fetch is `--depth=1`; later fetches are incremental.
 - `composer.json` of all new refs is read with a single `git cat-file --batch` instead of one `git show` per ref.
 - The first run no longer delegates to a regular Composer solve: it fetches all VCS repositories in parallel into mirrors, indexes them locally and continues on the fast path. A changed `repositories` list is synchronized incrementally instead of forcing a full re-prime.
