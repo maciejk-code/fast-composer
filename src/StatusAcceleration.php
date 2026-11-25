@@ -5,6 +5,7 @@ namespace FastComposer;
 use Composer\Cache;
 use Composer\Composer;
 use Composer\Downloader\ZipDownloader;
+use Composer\Downloader\GitDownloader;
 use Composer\IO\IOInterface;
 use Composer\Util\Filesystem;
 
@@ -15,7 +16,6 @@ final class StatusAcceleration
     {
         return in_array(Composer::getVersion(), ['2.8.12', '2.9.5', '2.10.3'], true)
             && InstallCompatibility::supportsApplication()
-            && class_exists(\ZipArchive::class)
             && in_array(PHP_OS_FAMILY, ['Linux', 'Darwin'], true);
     }
 
@@ -32,9 +32,14 @@ final class StatusAcceleration
         $manager = $composer->getDownloadManager();
         $config = $composer->getConfig();
         $process = $composer->getLoop()->getProcessExecutor();
+        if ($process === null) {
+            return;
+        }
+        self::attachGit($composer, $io);
         if (
-            get_class($manager->getDownloader('zip')) !== ZipDownloader::class
-            || $process === null || $config->get('cache-files-ttl') <= 0
+            !class_exists(\ZipArchive::class)
+            || get_class($manager->getDownloader('zip')) !== ZipDownloader::class
+            || $config->get('cache-files-ttl') <= 0
         ) {
             return;
         }
@@ -49,5 +54,46 @@ final class StatusAcceleration
             new Filesystem($process),
             $process
         ));
+    }
+
+    private static function attachGit(Composer $composer, IOInterface $io): void
+    {
+        $manager = $composer->getDownloadManager();
+        $process = $composer->getLoop()->getProcessExecutor();
+        if (
+            $process === null || getenv('FAST_COMPOSER_STATUS_GIT') === '0'
+            || get_class($manager->getDownloader('git')) !== GitDownloader::class
+        ) {
+            return;
+        }
+        $paths = [];
+        $realPaths = [];
+        foreach ($composer->getRepositoryManager()->getLocalRepository()->getCanonicalPackages() as $package) {
+            if ($manager->getDownloaderForPackage($package) !== $manager->getDownloader('git')) {
+                continue;
+            }
+            $path = $composer->getInstallationManager()->getInstallPath($package);
+            if ($path === null || is_link($path) || !is_dir($path.'/.git') || is_link($path.'/.git')) {
+                continue;
+            }
+            $real = realpath($path);
+            if ($real === false) {
+                continue;
+            }
+            foreach ($realPaths as $other) {
+                if ($real === $other || str_starts_with($real, $other.'/') || str_starts_with($other, $real.'/')) {
+                    // Shared/nested paths could observe each other's Git operations.
+                    return;
+                }
+            }
+            $paths[] = $path;
+            $realPaths[] = $real;
+        }
+        if (count($paths) < 2) {
+            return;
+        }
+        $git = new StatusGitDownloader($io, $composer->getConfig(), $process, new Filesystem($process));
+        $git->setStatusPaths($paths);
+        $manager->setDownloader('git', $git);
     }
 }
