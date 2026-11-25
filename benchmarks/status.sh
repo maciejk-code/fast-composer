@@ -39,11 +39,13 @@ if [[ "$actual" != "$COUNT" ]]; then
   exit 1
 fi
 for ((i=0;i<RUNS;i++)); do
-  if ((i%2==0)); then modes=(standard fast); else modes=(fast standard); fi
+  if ((i%2==0)); then modes=(standard stream fast); else modes=(fast stream standard); fi
   for mode in "${modes[@]}"; do
     start="$(php -r 'echo microtime(true);')"
     if [[ "$mode" == fast ]]; then
       php "$ROOT/bin/fast-composer" composer-status --no-ansi >"$BASE/fast.out" 2>"$BASE/fast.err"
+    elif [[ "$mode" == stream ]]; then
+      FAST_COMPOSER_STATUS_FINGERPRINTS=0 php "$ROOT/bin/fast-composer" composer-status --no-ansi >"$BASE/fast.out" 2>"$BASE/fast.err"
     else
       composer status --no-ansi >"$BASE/standard.out" 2>"$BASE/standard.err"
     fi
@@ -53,4 +55,4 @@ for ((i=0;i<RUNS;i++)); do
     diff -u "$BASE/standard.err" "$BASE/fast.err"
   done
 done
-php -r 'function median($f){$a=array_map("floatval",file($f));sort($a);$n=count($a);return ($a[intdiv($n-1,2)]+$a[intdiv($n,2)])/2;}$a=median($argv[1]);$b=median($argv[2]);printf("Composer: %.3fs | Fast Composer: %.3fs | %.2fx\n",$a,$b,$a/$b);' "$BASE/standard.times" "$BASE/fast.times"
+php -r 'function median($f){$a=array_map("floatval",file($f));sort($a);$n=count($a);return ($a[intdiv($n-1,2)]+$a[intdiv($n,2)])/2;}$a=median($argv[1]);$b=median($argv[2]); $s=median($argv[3]);printf("Composer: %.3fs | Streaming ZIP: %.3fs | Cached fingerprints: %.3fs | %.2fx\n",$a,$s,$b,$a/$b);' "$BASE/standard.times" "$BASE/fast.times" "$BASE/stream.times"
