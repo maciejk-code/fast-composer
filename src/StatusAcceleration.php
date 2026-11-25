@@ -24,7 +24,7 @@ final class StatusAcceleration
         // Plugins can change cache keys, downloads, paths or hooks.
         if (
             !self::supported() || $io->isDebug()
-            || $composer->getPluginManager()->getRegisteredPlugins() !== []
+            || self::hasPlugins($composer)
             || $composer->getPackage()->getScripts() !== []
         ) {
             return;
@@ -54,6 +54,29 @@ final class StatusAcceleration
             new Filesystem($process),
             $process
         ));
+    }
+
+    private static function hasPlugins(Composer $composer): bool
+    {
+        $plugins = $composer->getPluginManager();
+        if (Composer::getVersion() !== '2.8.12') {
+            return $plugins->getRegisteredPlugins() !== [];
+        }
+        if ($plugins->getPlugins() !== []) {
+            return true;
+        }
+        // Composer 2.8 exposes active plugins but omits legacy installers from getPlugins().
+        foreach ([$composer, $plugins->getGlobalComposer()] as $instance) {
+            if ($instance === null) {
+                continue;
+            }
+            foreach ($instance->getRepositoryManager()->getLocalRepository()->getPackages() as $package) {
+                if (in_array($package->getType(), ['composer-plugin', 'composer-installer'], true)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private static function attachGit(Composer $composer, IOInterface $io): void
