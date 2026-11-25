@@ -10,12 +10,13 @@ final class StatusZipComparison
 {
     public static function identical(string $archive, string $path, ?StatusFingerprintCache $cache = null): bool
     {
-        if (!class_exists(\ZipArchive::class) || is_link($path) || !is_dir($path)) {
+        // ext-zip exposes encryption metadata only on builds with encryption support.
+        if (!defined('ZipArchive::EM_AES_128') || is_link($path) || !is_dir($path)) {
             return false;
         }
         // The archive itself is always rehashed. Never infer validity from size or mtime.
         $digest = $cache !== null ? @hash_file('sha256', $archive) : false;
-        $cached = $digest !== false && $cache !== null ? $cache->load($archive, $digest) : null;
+        $cached = $cache !== null && $digest !== false ? $cache->load($archive, $digest) : null;
         $fingerprints = [];
         $zip = new \ZipArchive();
         if ($zip->open($archive, \ZipArchive::RDONLY | \ZipArchive::CHECKCONS) !== true) {
@@ -55,7 +56,7 @@ final class StatusZipComparison
                     return false;
                 }
                 if (
-                    ($stat['encryption_method'] ?? 0) !== 0
+                    $stat['encryption_method'] !== \ZipArchive::EM_NONE
                     || !in_array($stat['comp_method'], [\ZipArchive::CM_STORE, \ZipArchive::CM_DEFLATE], true)
                     || $stat['size'] < 0 || $stat['size'] > 100 * 1024 * 1024
                     || ($directory && $stat['size'] !== 0)
@@ -131,7 +132,7 @@ final class StatusZipComparison
             if ($expected !== []) {
                 return false;
             }
-            if ($digest !== false && $cache !== null) {
+            if ($cache !== null && $digest !== false) {
                 // Reject results if Composer replaced the archive during comparison.
                 if (hash_file('sha256', $archive) !== $digest) {
                     return false;
