@@ -153,10 +153,17 @@ and real-project testing are required before release.
 including its reporting, version checks, and exit codes. For ordinary clean ZIP packages
 already in Composer's cache, it verifies every installed file against the archive without
 extracting it. Changed, missing, unusual or uncached packages use the original downloader.
-Git/source packages also use Composer's original implementation. A private cache stores fingerprints of original archive contents, keyed to the full archive
-SHA-256. Installed file contents are always rehashed; size and timestamps cannot establish
-cleanliness. Shared or read-only caches fall back to streaming ZIP comparison. Disable this
-layer with `FAST_COMPOSER_STATUS_FINGERPRINTS=0`; `composer clear-cache` also removes it.
+
+A private cache stores fingerprints of original ZIP contents keyed to the full archive's
+SHA-256 hash. Fast Composer rehashes installed file contents on every run to detect changes
+even when size and timestamps match. Shared or read-only caches fall back to streaming ZIP
+comparison. Set `FAST_COMPOSER_STATUS_FINGERPRINTS=0` to disable fingerprint caching. Run
+`composer clear-cache` to remove cached fingerprints.
+
+Clean Git source checkouts use a bounded batch of native local Git status processes. Composer
+handles dirty checkouts, failed checks, version guessing, and remote checks. Git batching
+honours `COMPOSER_MAX_PARALLEL_PROCESSES` with a maximum of 8. Set `FAST_COMPOSER_STATUS_GIT=0`
+to disable Git batching.
 
 The ZIP optimization currently targets Composer 2.8.12, 2.9.5 and 2.10.3 on Linux/macOS
 with ext-zip and the Composer phar. Projects with active plugins or root scripts, debug mode,

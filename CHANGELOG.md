@@ -16,6 +16,7 @@
 ### Performance
 
 - Cache SHA-256 fingerprints of original ZIP contents in an owner-only Composer cache subdirectory; each run rehashes the archive and installed files, avoiding decompression on warm clean status checks.
+- Run independent clean Git source status checks concurrently; native Composer still checks versions, unpushed changes and any dirty or failed checkout.
 
 - VCS refresh uses a persistent shallow mirror per repository (in the Fast Composer cache): one `git fetch` both lists refs and downloads new tips, replacing the `ls-remote` + throw-away clone pair. The first fetch is `--depth=1`; later fetches are incremental.
 - `composer.json` of all new refs is read with a single `git cat-file --batch` instead of one `git show` per ref.
