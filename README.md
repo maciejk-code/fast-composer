@@ -50,6 +50,9 @@ fast-composer require company/package:dev-feature
 # inspect cache state
 fast-composer status
 
+# inspect locally modified dependencies (native Composer status)
+fast-composer composer-status -v
+
 # explicitly rebuild/refetch the VCS snapshot
 fast-composer refresh
 
@@ -143,6 +146,24 @@ time. The dedicated install-benchmark job runs 68 local SSH transport fixtures
 with 150 ms injected latency and 120,000 generated files (~6 GiB). These are
 synthetic workloads, not measurements on real private repositories. CI results
 and real-project testing are required before release.
+
+### Dependency status
+
+`fast-composer composer-status [composer options]` uses Composer's own status command,
+including its reporting, version checks, and exit codes. For ordinary clean ZIP packages
+already in Composer's cache, it verifies every installed file against the archive without
+extracting it. Changed, missing, unusual or uncached packages use the original downloader.
+Git/source packages also use Composer's original implementation. No persistent file
+fingerprints are trusted.
+
+The ZIP optimization currently targets Composer 2.8.12, 2.9.5 and 2.10.3 on Linux/macOS
+with ext-zip and the Composer phar. Projects with active plugins or root scripts, debug mode,
+and other Composer versions retain native status behaviour. No option is required to enable
+the optimization. Set `FAST_COMPOSER_STATUS=0` for a plain Composer baseline or
+`FAST_COMPOSER_STATUS_TRACE=1` to report which packages actually used the fast path.
+
+Run `bash benchmarks/status.sh` to compare warm, clean status wall times with output and
+exit-code parity. The synthetic fixture is not a measurement of a production project.
 
 ## First run
 

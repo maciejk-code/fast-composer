@@ -9,6 +9,8 @@
 
 ### Added
 
+- `fast-composer composer-status` runs native dependency status with a zero-extraction fast path for identical cached ZIP packages. Existing `fast-composer status` still reports snapshot state. Dirty packages and unsupported pipelines fall back to Composer.
+
 - Opt-in `fast-composer install --skip-dirty-packages` keeps locally modified or unpublished Git source checkouts across **all Composer package types**, while installing other packages normally. It uses an ephemeral lock overlay, leaves the project lock untouched, refuses incompatible package metadata, and warns that the local vendor state may differ from the committed lock.
 
 ### Performance
