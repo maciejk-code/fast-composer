@@ -111,15 +111,19 @@ Use the latest security-patched Composer release; compatibility does not imply
 that an older Composer release is safe. No extra flag is required.
 Git prefetch uses the approved install/update operations and source preferences
 (including dist-capable packages), with a private, per-project VCS cache and
-a lock held through installation. Plain Composer keeps its own cache.
-Existing shared VCS caches are not migrated; first use can be slower. Explicit
+a lock held through installation. The cache is stable when dependencies are
+added or removed; historical lossy-key collisions fall back to native Composer.
+Plain Composer keeps its own cache.
+Existing shared and older URL-set-keyed VCS caches are not migrated or deleted;
+first use of the new namespace can be slower. Explicit
 COMPOSER_CACHE_VCS_DIR, read-only cache, dry-run, offline, custom manifests and
 download-modifying plugin installation bypass prefetch. Dist downloads use
 Composer's native parallel HTTP downloads.
 
 On Linux/macOS, built-in Git and ZIP downloaders use a scoped filesystem
-for actual deletion calls on installed update/removal package paths containing
-node_modules. The directory must be within the project, canonical, non-symlinked,
+for actual deletion calls on update/removal package paths containing
+node_modules and existing checkout directories targeted by install operations.
+For install operations only the node_modules child is eligible. The directory must be within the project, canonical, non-symlinked,
 on the same filesystem and still match its recorded identity. No PATH shim,
 shell interpolation or speculative checkout movement. Cleanup runs in parallel
 with installation and is joined before normal exit; errors are reported and
@@ -358,6 +362,8 @@ The repository maintains tests for:
 - HTTPS authentication in Composer's order (Git's own first, then `auth.json`), the working method remembered per repository, and a clear failure without credentials (`tests/auth-contract.sh`).
 
 Run everything locally with `bash tests/ci.sh` (or `composer check`): coding standard (PHP_CodeSniffer, `phpcs.xml.dist`), PHPStan level 8, unit tests and all contracts. CI calls the same script.
+
+To use a custom Linux runner for the CI and Benchmark workflows, make the runner available to this repository and set the `CI_RUNNER` repository variable to its label (for example, `ubicloud-standard-2`). Create the variable under **Settings → Secrets and variables → Actions → Variables**. When the variable is unset or empty, Linux jobs use `ubuntu-24.04`. The macOS compatibility job uses `macos-latest`.
 
 ## Code layout
 

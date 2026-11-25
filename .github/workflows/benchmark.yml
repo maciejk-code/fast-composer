@@ -13,7 +13,7 @@ permissions:
   contents: read
 jobs:
   vcs-benchmark:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
@@ -28,7 +28,7 @@ jobs:
       - name: Private-VCS-like workload
         run: bash benchmarks/private-vcs-like.sh
   install-benchmark:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
