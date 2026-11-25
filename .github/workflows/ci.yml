@@ -64,6 +64,9 @@ jobs:
           extensions: posix, phar, zip
       - run: composer install --no-interaction --prefer-dist
       - run: php tests/run.php
+      - name: Verify status acceleration on older supported Composer versions
+        if: matrix.composer == '2.8.12' || matrix.composer == '2.9.5'
+        run: bash tests/ci.sh status status-git
       - name: Verify accelerated install, not just fallback
         env:
           BENCH_INSTALL_PACKAGES: '4'
