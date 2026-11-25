@@ -30,7 +30,15 @@ final class AcceleratedComposerApplication extends Application
         $composer = parent::getComposer($required, $disablePlugins, $disableScripts);
         if ($composer !== null && $this->registered !== $composer) {
             $this->registered = $composer;
-            $composer->getEventDispatcher()->addListener(InstallerEvents::PRE_OPERATIONS_EXEC, [$this, 'accelerate'], PHP_INT_MIN);
+            if (($this->args[0] ?? null) === 'status') {
+                try {
+                    StatusAcceleration::attach($composer, $this->getIO());
+                } catch (\Throwable) {
+                    // A missing or changed Composer capability must not break status.
+                }
+            } else {
+                $composer->getEventDispatcher()->addListener(InstallerEvents::PRE_OPERATIONS_EXEC, [$this, 'accelerate'], PHP_INT_MIN);
+            }
         }
         return $composer;
     }

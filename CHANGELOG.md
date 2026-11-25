@@ -9,9 +9,14 @@
 
 ### Added
 
+- `fast-composer composer-status` runs native dependency status with a zero-extraction fast path for identical cached ZIP packages. Existing `fast-composer status` still reports snapshot state. Dirty packages and unsupported pipelines fall back to Composer.
+
 - Opt-in `fast-composer install --skip-dirty-packages` keeps locally modified or unpublished Git source checkouts across **all Composer package types**, while installing other packages normally. It uses an ephemeral lock overlay, leaves the project lock untouched, refuses incompatible package metadata, and warns that the local vendor state may differ from the committed lock.
 
 ### Performance
+
+- Cache SHA-256 fingerprints of original ZIP contents in an owner-only Composer cache subdirectory; each run rehashes the archive and installed files, avoiding decompression on warm clean status checks.
+- Run independent clean Git source status checks concurrently; native Composer still checks versions, unpushed changes and any dirty or failed checkout.
 
 - VCS refresh uses a persistent shallow mirror per repository (in the Fast Composer cache): one `git fetch` both lists refs and downloads new tips, replacing the `ls-remote` + throw-away clone pair. The first fetch is `--depth=1`; later fetches are incremental.
 - `composer.json` of all new refs is read with a single `git cat-file --batch` instead of one `git show` per ref.

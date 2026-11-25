@@ -32,6 +32,21 @@ final class Application
             fwrite(STDERR, "Cannot determine the current directory (was it deleted?)\n");
             return 2;
         }
+        if ($cmd === 'composer-status') {
+            $args[0] = 'status';
+            if (getenv('FAST_COMPOSER_STATUS') !== '0') {
+                $code = InProcessComposer::run($args, $root, [], static function () use ($root, $args): \Composer\Console\Application {
+                    if (!StatusAcceleration::supported()) {
+                        return new \Composer\Console\Application();
+                    }
+                    return new AcceleratedComposerApplication($root, $args);
+                });
+                if ($code !== null) {
+                    return $code;
+                }
+            }
+            return $this->delegateComposer($args, $root);
+        }
         if (!is_file($root.'/composer.json')) {
             fwrite(STDERR, "composer.json not found\n");
             return 2;
@@ -593,7 +608,8 @@ final class Application
         echo "  fast-composer require vendor/package:constraint [composer options]\n";
         echo "  fast-composer refresh\n";
         echo "  fast-composer verify\n";
-        echo "  fast-composer status\n";
+        echo "  fast-composer status (VCS snapshot)\n";
+        echo "  fast-composer composer-status [composer options]\n";
         echo "  fast-composer install [--skip-dirty-packages] [composer options]\n";
         echo "  fast-composer --version\n\n";
         echo "Fast update/require operations always imply --no-install.\n";
