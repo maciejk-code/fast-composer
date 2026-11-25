@@ -363,6 +363,8 @@ The repository maintains tests for:
 
 Run everything locally with `bash tests/ci.sh` (or `composer check`): coding standard (PHP_CodeSniffer, `phpcs.xml.dist`), PHPStan level 8, unit tests and all contracts. CI calls the same script.
 
+To use a custom Linux runner for the CI and Benchmark workflows, make the runner available to this repository and set the `CI_RUNNER` repository variable to its label (for example, `ubicloud-standard-2`). Create the variable under **Settings → Secrets and variables → Actions → Variables**. When the variable is unset or empty, Linux jobs use `ubuntu-24.04`. The macOS compatibility job uses `macos-latest`.
+
 ## Code layout
 
 | Class | Responsibility |
