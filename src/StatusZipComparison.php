@@ -8,11 +8,15 @@ namespace FastComposer;
  */
 final class StatusZipComparison
 {
-    public static function identical(string $archive, string $path): bool
+    public static function identical(string $archive, string $path, ?StatusFingerprintCache $cache = null): bool
     {
         if (!class_exists(\ZipArchive::class) || is_link($path) || !is_dir($path)) {
             return false;
         }
+        // The archive itself is always rehashed. Never infer validity from size or mtime.
+        $digest = $cache !== null ? @hash_file('sha256', $archive) : false;
+        $cached = $digest !== false && $cache !== null ? $cache->load($archive, $digest) : null;
+        $fingerprints = [];
         $zip = new \ZipArchive();
         if ($zip->open($archive, \ZipArchive::RDONLY | \ZipArchive::CHECKCONS) !== true) {
             return false;
@@ -103,15 +107,40 @@ final class StatusZipComparison
                     if (!$file->isDir()) {
                         return false;
                     }
-                } elseif (
-                    !$file->isFile() || $file->getSize() !== $entry['size']
-                    || !self::sameFile($zip, $entry['name'], $file->getPathname(), $entry['size'], $entry['crc'])
-                ) {
-                    return false;
+                } else {
+                    if (!$file->isFile() || $file->getSize() !== $entry['size']) {
+                        return false;
+                    }
+                    $name = $entry['name'];
+                    $fingerprint = null;
+                    if ($cached !== null && isset($cached[$name])) {
+                        $actual = hash_file('sha256', $file->getPathname());
+                        if ($actual === false || !hash_equals($cached[$name], $actual)) {
+                            return false;
+                        }
+                        $fingerprint = $actual;
+                    } elseif (!self::sameFile($zip, $name, $file->getPathname(), $entry['size'], $entry['crc'], $fingerprint)) {
+                        return false;
+                    }
+                    if ($fingerprint !== null) {
+                        $fingerprints[$name] = $fingerprint;
+                    }
                 }
                 unset($expected[$relative]);
             }
-            return $expected === [];
+            if ($expected !== []) {
+                return false;
+            }
+            if ($digest !== false && $cache !== null) {
+                // Reject results if Composer replaced the archive during comparison.
+                if (hash_file('sha256', $archive) !== $digest) {
+                    return false;
+                }
+                if ($cached === null || $fingerprints !== $cached) {
+                    $cache->save($archive, $digest, $fingerprints);
+                }
+            }
+            return true;
         } catch (\Throwable) {
             return false;
         } finally {
@@ -152,7 +181,7 @@ final class StatusZipComparison
         return true;
     }
 
-    private static function sameFile(\ZipArchive $zip, string $name, string $path, int $size, int $crc): bool
+    private static function sameFile(\ZipArchive $zip, string $name, string $path, int $size, int $crc, ?string &$fingerprint): bool
     {
         $archive = $zip->getStream($name);
         if ($archive === false) {
@@ -164,6 +193,7 @@ final class StatusZipComparison
                 return false;
             }
             $hash = hash_init('crc32b');
+            $contentHash = hash_init('sha256');
             $remaining = $size;
             while ($remaining > 0) {
                 $length = min(65536, $remaining);
@@ -172,8 +202,10 @@ final class StatusZipComparison
                     return false;
                 }
                 hash_update($hash, $bytes);
+                hash_update($contentHash, $bytes);
                 $remaining -= $length;
             }
+            $fingerprint = hash_final($contentHash);
             return fread($archive, 1) === '' && fread($local, 1) === ''
                 && hash_final($hash) === sprintf('%08x', $crc);
         } finally {

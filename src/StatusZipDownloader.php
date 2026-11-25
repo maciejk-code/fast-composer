@@ -50,6 +50,14 @@ final class StatusZipDownloader extends ZipDownloader
         if ($checksum !== null && $checksum !== '' && $this->cache->sha1($key) !== $checksum) {
             return false;
         }
-        return StatusZipComparison::identical($archive, $path);
+        $fingerprints = null;
+        if (getenv('FAST_COMPOSER_STATUS_FINGERPRINTS') !== '0' && !$this->config->get('cache-read-only')) {
+            try {
+                $fingerprints = StatusFingerprintCache::open((string) $this->config->get('cache-dir'));
+            } catch (\Throwable) {
+                // The streaming comparison remains available without a private cache.
+            }
+        }
+        return StatusZipComparison::identical($archive, $path, $fingerprints);
     }
 }
