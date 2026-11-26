@@ -12,8 +12,8 @@ final class StatusZipDownloader extends ZipDownloader
 {
     /** @var list<array{PackageInterface, string}> */
     private array $pending = [];
-    /** @var array<string, string> */
-    private array $proven = [];
+    /** @var array<string, array{string, bool}> */
+    private array $checked = [];
 
     /** @param list<array{PackageInterface, string}> $packages */
     public function setStatusPackages(array $packages): void
@@ -30,13 +30,15 @@ final class StatusZipDownloader extends ZipDownloader
                 try {
                     $this->scan($pending);
                 } catch (\Throwable) {
-                    $this->proven = [];
+                    $this->checked = [];
                 }
             }
             $archive = $this->candidate($package, $path);
-            $proven = $archive !== null && ($this->proven[$path] ?? null) === $archive;
-            unset($this->proven[$path]);
-            if ($proven || ($archive !== null && $this->compare($archive, $path))) {
+            $checked = $this->checked[$path] ?? null;
+            unset($this->checked[$path]);
+            $identical = $archive !== null && ($checked !== null && $checked[0] === $archive
+                ? $checked[1] : $this->compare($archive, $path));
+            if ($identical) {
                 if (getenv('FAST_COMPOSER_STATUS_TRACE') === '1') {
                     $this->io->writeError('[fast-composer] compared cached ZIP without extraction: '.$package->getName());
                 }
@@ -67,16 +69,21 @@ final class StatusZipDownloader extends ZipDownloader
         foreach ($packages as [$package, $path]) {
             $archive = $this->candidate($package, $path);
             $real = realpath($path);
-            if ($archive === null || $real === false) {
+            if ($real === false) {
                 continue;
             }
             foreach ($paths as $other) {
-                if ($real === $other || str_starts_with($real, $other.'/') || str_starts_with($other, $real.'/')) {
+                if (
+                    $real === $other || str_starts_with($real, $other.'/') || str_starts_with($other, $real.'/')
+                    || $real.'_compare' === $other || $other.'_compare' === $real
+                ) {
                     return;
                 }
             }
             $paths[] = $real;
-            $tasks[] = [$archive, $path];
+            if ($archive !== null) {
+                $tasks[] = [$archive, $path];
+            }
         }
         if (count($tasks) < 8) {
             return;
@@ -104,8 +111,8 @@ final class StatusZipDownloader extends ZipDownloader
                     continue;
                 }
                 foreach ($batch as $i => [$archive, $path]) {
-                    if (($results[$i] ?? false) === true) {
-                        $this->proven[$path] = $archive;
+                    if (is_bool($results[$i] ?? null)) {
+                        $this->checked[$path] = [$archive, $results[$i]];
                     }
                 }
             }
@@ -117,7 +124,7 @@ final class StatusZipDownloader extends ZipDownloader
             }
         }
         if (getenv('FAST_COMPOSER_STATUS_TRACE') === '1') {
-            $this->io->writeError(sprintf('[fast-composer] parallel ZIP proved %d clean packages', count($this->proven)));
+            $this->io->writeError(sprintf('[fast-composer] parallel ZIP proved %d clean packages', count(array_filter($this->checked, static fn (array $entry): bool => $entry[1]))));
         }
     }
 
