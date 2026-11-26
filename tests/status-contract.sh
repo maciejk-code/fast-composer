@@ -28,11 +28,11 @@ parity() {
 }
 parity
 parity -v
-case "$(composer --version --no-ansi | head -n1)" in
-  "Composer version 2.8.12 "*|"Composer version 2.9.5 "*|"Composer version 2.10.2 "*|"Composer version 2.10.3 "*)
+case "$(composer --version --no-ansi 2>&1)" in
+  *"Composer version 2.8.12 "*|*"Composer version 2.9.5 "*|*"Composer version 2.10.2 "*|*"Composer version 2.10.3 "*)
     if php -r 'exit(extension_loaded("zip") && in_array(PHP_OS_FAMILY,["Linux","Darwin"],true)?0:1);'; then
       FAST_COMPOSER_STATUS_TRACE=1 php "$ROOT/bin/fast-composer" composer-status --no-ansi >"$BASE/trace.out" 2>"$BASE/trace.err"
-      grep -F 'compared cached ZIP without extraction: fixture/status' "$BASE/trace.err"
+      grep -F 'compared cached ZIP without extraction: fixture/status' "$BASE/trace.err" || { cat "$BASE/trace.err" >&2; exit 1; }
     fi
     ;;
 esac
