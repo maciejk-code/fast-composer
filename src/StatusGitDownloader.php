@@ -15,6 +15,8 @@ final class StatusGitDownloader extends GitDownloader
     private array $pending = [];
     /** @var array<string, true> */
     private array $clean = [];
+    /** @var array<string, string> HEAD of clean checkouts with no unpushed changes */
+    private array $synced = [];
 
     /** @param list<string> $paths */
     public function setStatusPaths(array $paths): void
@@ -31,6 +33,7 @@ final class StatusGitDownloader extends GitDownloader
                 $this->scan($paths);
             } catch (\Throwable) {
                 $this->clean = [];
+                $this->synced = [];
             }
         }
         if (isset($this->clean[$path])) {
@@ -48,12 +51,21 @@ final class StatusGitDownloader extends GitDownloader
      */
     public function getVcsReference(PackageInterface $package, string $path): ?string
     {
-        $reference = parent::getVcsReference($package, $path);
         $locked = match ($package->getInstallationSource()) {
             'source' => $package->getSourceReference(),
             'dist' => $package->getDistReference(),
             default => null,
         };
+        if (
+            getenv('FAST_COMPOSER_STATUS_VERSION') !== '0'
+            && $locked !== null && ($this->synced[$path] ?? null) === $locked
+        ) {
+            if (getenv('FAST_COMPOSER_STATUS_TRACE') === '1') {
+                $this->io->writeError('[fast-composer] proved locked Git HEAD without version guess: '.$package->getName());
+            }
+            return null;
+        }
+        $reference = parent::getVcsReference($package, $path);
         if (
             getenv('FAST_COMPOSER_STATUS_VERSION') !== '0'
             && $reference !== null && $locked !== null && $reference === $locked
@@ -68,12 +80,24 @@ final class StatusGitDownloader extends GitDownloader
         return $reference;
     }
 
+    public function getUnpushedChanges(PackageInterface $package, string $path): ?string
+    {
+        if (isset($this->synced[$path])) {
+            unset($this->synced[$path]);
+            if (getenv('FAST_COMPOSER_STATUS_TRACE') === '1') {
+                $this->io->writeError('[fast-composer] proved synchronized Git refs: '.$package->getName());
+            }
+            return null;
+        }
+        return parent::getUnpushedChanges($package, $path);
+    }
+
     /** @param list<string> $paths */
     private function scan(array $paths): void
     {
         Git::cleanEnv($this->process);
         // Do not run concurrently against a shared/redirected Git index or worktree.
-        foreach (['GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_OBJECT_DIRECTORY', 'GIT_CONFIG_PARAMETERS'] as $name) {
+        foreach (['GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_OBJECT_DIRECTORY', 'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_COUNT', 'GIT_NAMESPACE', 'GIT_REPLACE_REF_BASE', 'GIT_ALTERNATE_OBJECT_DIRECTORIES'] as $name) {
             if (getenv($name) !== false) {
                 return;
             }
@@ -113,8 +137,47 @@ final class StatusGitDownloader extends GitDownloader
                 }
             }
         }
+        if (getenv('FAST_COMPOSER_STATUS_REFS') !== '0') {
+            $this->scanRefs(array_keys($this->clean), $limit);
+        }
         if (getenv('FAST_COMPOSER_STATUS_TRACE') === '1') {
             $this->io->writeError(sprintf('[fast-composer] parallel Git status proved %d clean checkouts', count($this->clean)));
+        }
+    }
+
+    /** @param list<string> $paths */
+    private function scanRefs(array $paths, int $limit): void
+    {
+        foreach (array_chunk($paths, max(1, $limit)) as $batch) {
+            $running = [];
+            try {
+                foreach ($batch as $path) {
+                    $child = new ChildProcess(
+                        ['git', 'show-ref', '--head', '-d'],
+                        $path,
+                        null,
+                        null,
+                        ProcessExecutor::getTimeout()
+                    );
+                    $running[$path] = $child;
+                    $child->start();
+                }
+                foreach ($running as $path => $child) {
+                    if ($child->wait() !== 0 || trim($child->getErrorOutput()) !== '') {
+                        continue;
+                    }
+                    $head = StatusGitRefs::synchronizedHead($child->getOutput(), $path);
+                    if ($head !== null) {
+                        $this->synced[$path] = $head;
+                    }
+                }
+            } finally {
+                foreach ($running as $child) {
+                    if ($child->isRunning()) {
+                        $child->stop(0.1);
+                    }
+                }
+            }
         }
     }
 }
