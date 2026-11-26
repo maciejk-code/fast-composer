@@ -160,12 +160,16 @@ extracting it. Changed, missing, unusual or uncached packages use the original d
 
 A private cache stores fingerprints of original ZIP contents keyed to the full archive's
 SHA-256 hash. Fast Composer rehashes installed file contents on every run to detect changes
-even when size and timestamps match. Shared or read-only caches fall back to streaming ZIP
+even when size and timestamps match. Independent ZIP packages are compared in up to four isolated
+PHP workers when at least eight candidates are eligible; set `FAST_COMPOSER_STATUS_ZIP_PARALLEL=0`
+to use serial comparisons. Shared or read-only caches fall back to streaming ZIP
 comparison. Set `FAST_COMPOSER_STATUS_FINGERPRINTS=0` to disable fingerprint caching. Run
 `composer clear-cache` to remove cached fingerprints.
 
 Clean Git source checkouts use a bounded batch of native local Git status processes. Composer
-handles dirty checkouts, failed checks, version guessing, and remote checks. Git batching
+handles dirty checkouts, failed checks and remote checks. If its first native version guess
+matches the exact locked Git SHA, status skips the duplicate guess; set
+`FAST_COMPOSER_STATUS_VERSION=0` to disable this shortcut. Git batching
 honours `COMPOSER_MAX_PARALLEL_PROCESSES` with a maximum of 8. Set `FAST_COMPOSER_STATUS_GIT=0`
 to disable Git batching.
 
@@ -175,8 +179,8 @@ and other Composer versions retain native status behaviour. No option is require
 the optimization. Set `FAST_COMPOSER_STATUS=0` for a plain Composer baseline or
 `FAST_COMPOSER_STATUS_TRACE=1` to report which packages actually used the fast path.
 
-Run `bash benchmarks/status.sh` for warm ZIP status (native, streaming, cached fingerprints)
-and `bash benchmarks/status-git.sh` for warm Git source status (native and parallel).
+Run `bash benchmarks/status.sh` for warm ZIP status (native, streaming, serial fingerprints, parallel)
+and `bash benchmarks/status-git.sh` for warm Git source status (native, local-status batching, and optimized version checks).
 Both assert that acceleration was actually used, compare output and exit codes, and report
 median wall times and speedups in the GitHub Actions job summary. The dedicated benchmark
 job runs on Composer 2.10.2 and 2.10.3 using the configured `CI_RUNNER` for Linux.
