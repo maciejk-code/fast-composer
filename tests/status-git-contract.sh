@@ -29,10 +29,11 @@ parity() {
   diff -u "$BASE/a.err" "$BASE/b.err"
 }
 parity -v
-case "$(composer --version --no-ansi | head -n1)" in
-  "Composer version 2.8.12 "*|"Composer version 2.9.5 "*|"Composer version 2.10.2 "*|"Composer version 2.10.3 "*)
+case "$(composer --version --no-ansi 2>&1)" in
+  *"Composer version 2.8.12 "*|*"Composer version 2.9.5 "*|*"Composer version 2.10.2 "*|*"Composer version 2.10.3 "*)
     FAST_COMPOSER_STATUS_TRACE=1 COMPOSER_MAX_PARALLEL_PROCESSES=4 php "$ROOT/bin/fast-composer" composer-status --no-ansi >"$BASE/trace.out" 2>"$BASE/trace.err"
-    grep -F 'parallel Git status proved 3 clean checkouts' "$BASE/trace.err"
+    grep -F 'parallel Git status proved 3 clean checkouts' "$BASE/trace.err" || { cat "$BASE/trace.err" >&2; exit 1; }
+    test "$(grep -cF 'skipped duplicate version guess:' "$BASE/trace.err")" = 3
     ;;
 esac
 printf 'modified\n' >vendor/fixture/a/code.php
@@ -43,3 +44,10 @@ COMPOSER_MAX_PARALLEL_PROCESSES=1 parity -v
 git -C vendor/fixture/a checkout -- code.php
 rm vendor/fixture/b/new.php
 parity -v
+# Native handling of new local commits and changed references must remain intact.
+git -C vendor/fixture/a checkout -b status-local-only
+printf 'local commit\n' >> vendor/fixture/a/code.php
+git -C vendor/fixture/a add code.php
+git -C vendor/fixture/a -c user.email=fixture@example.invalid -c user.name=fixture -c commit.gpgsign=false commit -qm local
+parity -v
+FAST_COMPOSER_STATUS_VERSION=0 parity -v
