@@ -6,6 +6,8 @@ BASE="$(mktemp -d)"
 trap 'rm -rf "$BASE"' EXIT
 export COMPOSER_ALLOW_SUPERUSER=1 COMPOSER_NO_INTERACTION=1
 export COMPOSER_HOME="$BASE/home" COMPOSER_CACHE_DIR="$BASE/cache"
+export FAST_COMPOSER_STATUS=1 FAST_COMPOSER_STATUS_FINGERPRINTS=1 FAST_COMPOSER_STATUS_TRACE=0
+umask 077
 COUNT="${BENCH_STATUS_PACKAGES:-40}"
 FILES="${BENCH_STATUS_FILES:-150}"
 RUNS="${BENCH_RUNS:-5}"
@@ -38,6 +40,12 @@ if [[ "$actual" != "$COUNT" ]]; then
   echo 'Fixture did not exercise the ZIP fast path; refusing to report acceleration.' >&2
   exit 1
 fi
+fingerprint_dir="$COMPOSER_CACHE_DIR/fast-composer-status-v1"
+fingerprints="$(find "$fingerprint_dir" -maxdepth 1 -type f -name '*.json' | wc -l | tr -d '[:space:]')"
+if [[ "$fingerprints" != "$COUNT" ]]; then
+  echo "Expected $COUNT cached fingerprints, found $fingerprints" >&2
+  exit 1
+fi
 for ((i=0;i<RUNS;i++)); do
   if ((i%2==0)); then modes=(standard stream fast); else modes=(fast stream standard); fi
   for mode in "${modes[@]}"; do
@@ -55,4 +63,8 @@ for ((i=0;i<RUNS;i++)); do
     diff -u "$BASE/standard.err" "$BASE/fast.err"
   done
 done
-php -r 'function median($f){$a=array_map("floatval",file($f));sort($a);$n=count($a);return ($a[intdiv($n-1,2)]+$a[intdiv($n,2)])/2;}$a=median($argv[1]);$b=median($argv[2]); $s=median($argv[3]);printf("Composer: %.3fs | Streaming ZIP: %.3fs | Cached fingerprints: %.3fs | %.2fx\n",$a,$s,$b,$a/$b);' "$BASE/standard.times" "$BASE/fast.times" "$BASE/stream.times"
+result="$(php -r 'function median($f){$a=array_map("floatval",file($f));sort($a);$n=count($a);return ($a[intdiv($n-1,2)]+$a[intdiv($n,2)])/2;}$a=median($argv[1]);$b=median($argv[2]); $s=median($argv[3]);printf("Composer: %.3fs | Streaming ZIP: %.3fs (%.2fx) | Cached fingerprints: %.3fs (%.2fx)\n",$a,$s,$a/$s,$b,$a/$b);' "$BASE/standard.times" "$BASE/fast.times" "$BASE/stream.times" )"
+printf '%s\n' "$result"
+if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+  printf '### ZIP status (%s packages, %s files/package, %s runs)\n\n%s\n\n' "$COUNT" "$FILES" "$RUNS" "$result" >> "$GITHUB_STEP_SUMMARY"
+fi
