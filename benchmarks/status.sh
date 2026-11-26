@@ -73,11 +73,11 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   printf '### ZIP status (%s packages, %s files/package, %s runs)\n\n%s\n\n' "$COUNT" "$FILES" "$RUNS" "$result" >> "$GITHUB_STEP_SUMMARY"
 fi
 # Verify mixed clean/dirty batches with same-size changes (not just the clean fast path).
-printf Z | dd of=vendor/bench/package-0/file-0.php bs=1 count=1 conv=notrunc 2>/dev/null
-printf Q >> vendor/bench/package-0/file-0.php
+php -r '$p=$argv[1];$s=file_get_contents($p);$s[0]=chr(ord($s[0]) ^ 1);file_put_contents($p,$s);' vendor/bench/package-0/file-0.php
 native=0; fast=0
 composer status --no-ansi -v >"$BASE/standard.out" 2>"$BASE/standard.err" || native=$?
 php "$ROOT/bin/fast-composer" composer-status --no-ansi -v >"$BASE/fast.out" 2>"$BASE/fast.err" || fast=$?
-test "$native" -ne 0 && test "$native" = "$fast"
+test "$native" -ne 0
+test "$native" = "$fast"
 diff -u "$BASE/standard.out" "$BASE/fast.out"
 diff -u "$BASE/standard.err" "$BASE/fast.err"
