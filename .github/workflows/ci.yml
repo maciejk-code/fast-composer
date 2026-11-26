@@ -31,6 +31,7 @@ jobs:
         with:
           php-version: '8.4'
           tools: composer:2.10.3
+          coverage: none
           extensions: posix, phar, zip
       - run: composer install --no-interaction --prefer-dist
       - run: bash tests/ci.sh cs analyse contracts
