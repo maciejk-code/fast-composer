@@ -4,6 +4,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BASE="$(mktemp -d)"
 trap 'rm -rf "$BASE"' EXIT
 export COMPOSER_ALLOW_SUPERUSER=1 COMPOSER_NO_INTERACTION=1
+export FAST_COMPOSER_STATUS=1 FAST_COMPOSER_IN_PROCESS=1
+# Fail with useful diagnostics rather than silently falling back in a coverage-enabled job.
+php -r 'printf("PHP %s; xdebug=%s; phar=%s; zip=%s\n", PHP_VERSION, extension_loaded("xdebug")?"yes":"no", extension_loaded("phar")?"yes":"no", extension_loaded("zip")?"yes":"no");'
 export COMPOSER_HOME="$BASE/home" COMPOSER_CACHE_DIR="$BASE/cache"
 mkdir "$BASE/project"
 for name in a b c; do
@@ -33,6 +36,9 @@ case "$(composer --version --no-ansi 2>&1)" in
   *"Composer version 2.8.12 "*|*"Composer version 2.9.5 "*|*"Composer version 2.10.2 "*|*"Composer version 2.10.3 "*)
     FAST_COMPOSER_STATUS_TRACE=1 COMPOSER_MAX_PARALLEL_PROCESSES=4 php "$ROOT/bin/fast-composer" composer-status --no-ansi >"$BASE/trace.out" 2>"$BASE/trace.err"
     grep -F 'parallel Git status proved 3 clean checkouts' "$BASE/trace.err" || { cat "$BASE/trace.err" >&2; exit 1; }
+    test "$(grep -cF 'proved locked Git HEAD without version guess:' "$BASE/trace.err")" = 3
+    test "$(grep -cF 'proved synchronized Git refs:' "$BASE/trace.err")" = 3
+    FAST_COMPOSER_STATUS_REFS=0 FAST_COMPOSER_STATUS_TRACE=1 php "$ROOT/bin/fast-composer" composer-status --no-ansi >"$BASE/trace.out" 2>"$BASE/trace.err"
     test "$(grep -cF 'skipped duplicate version guess:' "$BASE/trace.err")" = 3
     ;;
 esac
@@ -51,3 +57,10 @@ git -C vendor/fixture/a add code.php
 git -C vendor/fixture/a -c user.email=fixture@example.invalid -c user.name=fixture -c commit.gpgsign=false commit -qm local
 parity -v
 FAST_COMPOSER_STATUS_VERSION=0 parity -v
+# A colliding tag name and a remote branch with a different SHA must stay native.
+git -C vendor/fixture/b tag main
+parity -v
+git -C vendor/fixture/b tag -d main
+git -C vendor/fixture/c -c user.email=fixture@example.invalid -c user.name=fixture -c commit.gpgsign=false commit --allow-empty -qm divergent
+parity -v
+FAST_COMPOSER_STATUS_REFS=0 parity -v
