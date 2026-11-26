@@ -12,10 +12,21 @@ spl_autoload_register(static function (string $class): void {
     }
 });
 try {
-    $input = json_decode(stream_get_contents(STDIN), true, 512, JSON_THROW_ON_ERROR);
+    $raw = stream_get_contents(STDIN, 8 * 1024 * 1024 + 1);
+    if ($raw === false || strlen($raw) > 8 * 1024 * 1024) {
+        exit(1);
+    }
+    $input = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+    if (!is_array($input) || !is_array($input['tasks'] ?? null)) {
+        exit(1);
+    }
     $cache = is_string($input['cache'] ?? null) ? FastComposer\StatusFingerprintCache::open($input['cache']) : null;
     $results = [];
-    foreach ($input['tasks'] as [$archive, $path]) {
+    foreach ($input['tasks'] as $task) {
+        if (!is_array($task) || !is_string($task[0] ?? null) || !is_string($task[1] ?? null)) {
+            exit(1);
+        }
+        [$archive, $path] = $task;
         try {
             $results[] = FastComposer\StatusZipComparison::identical($archive, $path, $cache);
         } catch (Throwable) {
