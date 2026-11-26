@@ -169,7 +169,11 @@ comparison. Set `FAST_COMPOSER_STATUS_FINGERPRINTS=0` to disable fingerprint cac
 Clean Git source checkouts use a bounded batch of native local Git status processes. Composer
 handles dirty checkouts, failed checks and remote checks. If its first native version guess
 matches the exact locked Git SHA, status skips the duplicate guess; set
-`FAST_COMPOSER_STATUS_VERSION=0` to disable this shortcut. Git batching
+`FAST_COMPOSER_STATUS_VERSION=0` to disable this shortcut. On clean ordinary checkouts,
+parallel `git show-ref` also proves exact synchronized local/remote branch SHAs. This avoids
+redundant version guessing when HEAD matches the lock and avoids equal-ref diffs. Ambiguous,
+divergent, missing or unusual refs fall back to native Composer, including remote fetches.
+Set `FAST_COMPOSER_STATUS_REFS=0` to disable the reference proof. Git batching
 honours `COMPOSER_MAX_PARALLEL_PROCESSES` with a maximum of 8. Set `FAST_COMPOSER_STATUS_GIT=0`
 to disable Git batching.
 
