@@ -17,6 +17,11 @@ final class StatusGitRefs
             }
             $refs[$match[2]] = $match[1];
         }
+        foreach (array_keys($refs) as $name) {
+            if ($name !== 'HEAD' && !preg_match('{^refs/(?:heads|remotes|tags)/}D', $name)) {
+                return null;
+            }
+        }
         $head = $refs['HEAD'] ?? null;
         if ($head === null) {
             return null;
