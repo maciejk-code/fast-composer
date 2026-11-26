@@ -91,7 +91,7 @@ final class StatusZipDownloader extends ZipDownloader
         $cacheDir = $this->fingerprintDirectory();
         $running = [];
         try {
-            foreach (array_chunk($tasks, (int) ceil(count($tasks) / $limit)) as $batch) {
+            foreach (array_chunk($tasks, max(1, (int) ceil(count($tasks) / $limit))) as $batch) {
                 $child = new ChildProcess(
                     [PHP_BINARY, __DIR__.'/../bin/status-zip-worker.php'],
                     null,
