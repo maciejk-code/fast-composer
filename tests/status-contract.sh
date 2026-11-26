@@ -4,6 +4,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BASE="$(mktemp -d)"
 trap 'rm -rf "$BASE"' EXIT
 export COMPOSER_ALLOW_SUPERUSER=1 COMPOSER_NO_INTERACTION=1
+export FAST_COMPOSER_STATUS=1 FAST_COMPOSER_IN_PROCESS=1
+# Fail with useful diagnostics rather than silently falling back in a coverage-enabled job.
+php -r 'printf("PHP %s; xdebug=%s; phar=%s; zip=%s\n", PHP_VERSION, extension_loaded("xdebug")?"yes":"no", extension_loaded("phar")?"yes":"no", extension_loaded("zip")?"yes":"no");'
 export COMPOSER_HOME="$BASE/home" COMPOSER_CACHE_DIR="$BASE/cache" FAST_COMPOSER_CACHE_DIR="$BASE/fast-cache"
 mkdir -p "$BASE/pkg/src" "$BASE/project"
 printf '{"name":"fixture/status","version":"1.0.0"}\n' > "$BASE/pkg/composer.json"
@@ -28,11 +31,11 @@ parity() {
 }
 parity
 parity -v
-case "$(composer --version --no-ansi | head -n1)" in
-  "Composer version 2.8.12 "*|"Composer version 2.9.5 "*|"Composer version 2.10.3 "*)
+case "$(composer --version --no-ansi 2>&1)" in
+  *"Composer version 2.8.12 "*|*"Composer version 2.9.5 "*|*"Composer version 2.10.2 "*|*"Composer version 2.10.3 "*)
     if php -r 'exit(extension_loaded("zip") && in_array(PHP_OS_FAMILY,["Linux","Darwin"],true)?0:1);'; then
       FAST_COMPOSER_STATUS_TRACE=1 php "$ROOT/bin/fast-composer" composer-status --no-ansi >"$BASE/trace.out" 2>"$BASE/trace.err"
-      grep -F 'compared cached ZIP without extraction: fixture/status' "$BASE/trace.err"
+      grep -F 'compared cached ZIP without extraction: fixture/status' "$BASE/trace.err" || { cat "$BASE/trace.err" >&2; exit 1; }
     fi
     ;;
 esac

@@ -14,7 +14,7 @@ final class StatusAcceleration
 {
     public static function supported(): bool
     {
-        return in_array(Composer::getVersion(), ['2.8.12', '2.9.5', '2.10.3'], true)
+        return in_array(Composer::getVersion(), ['2.8.12', '2.9.5', '2.10.2', '2.10.3'], true)
             && InstallCompatibility::supportsApplication()
             && in_array(PHP_OS_FAMILY, ['Linux', 'Darwin'], true);
     }
@@ -45,7 +45,7 @@ final class StatusAcceleration
         }
         $cache = new Cache($io, (string) $config->get('cache-files-dir'), 'a-z0-9_./');
         $cache->setReadOnly((bool) $config->get('cache-read-only'));
-        $manager->setDownloader('zip', new StatusZipDownloader(
+        $zip = new StatusZipDownloader(
             $io,
             $config,
             $composer->getLoop()->getHttpDownloader(),
@@ -53,7 +53,19 @@ final class StatusAcceleration
             $cache,
             new Filesystem($process),
             $process
-        ));
+        );
+        $packages = [];
+        foreach ($composer->getRepositoryManager()->getLocalRepository()->getCanonicalPackages() as $package) {
+            if ($manager->getDownloaderForPackage($package) !== $manager->getDownloader('zip')) {
+                continue;
+            }
+            $path = $composer->getInstallationManager()->getInstallPath($package);
+            if ($path !== null) {
+                $packages[] = [$package, $path];
+            }
+        }
+        $zip->setStatusPackages($packages);
+        $manager->setDownloader('zip', $zip);
     }
 
     private static function hasPlugins(Composer $composer): bool

@@ -51,3 +51,23 @@ jobs:
           BENCH_NODE_FILE_BYTES: '53688'
           FAST_COMPOSER_ASSERT_ACCELERATION: '1'
         run: bash benchmarks/removal.sh
+  status-benchmark:
+    strategy:
+      fail-fast: false
+      matrix:
+        composer: ['2.10.2', '2.10.3']
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          tools: composer:${{ matrix.composer }}
+          coverage: none
+          extensions: posix, phar, zip
+      - run: composer install --no-interaction --prefer-dist
+      - name: Warm ZIP status (native, streaming and fingerprints)
+        run: bash benchmarks/status.sh
+      - name: Warm Git status (native and parallel)
+        run: bash benchmarks/status-git.sh
