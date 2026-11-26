@@ -14,7 +14,7 @@ final class StatusAcceleration
 {
     public static function supported(): bool
     {
-        return in_array(Composer::getVersion(), ['2.8.12', '2.9.5', '2.10.3'], true)
+        return in_array(Composer::getVersion(), ['2.8.12', '2.9.5', '2.10.2', '2.10.3'], true)
             && InstallCompatibility::supportsApplication()
             && in_array(PHP_OS_FAMILY, ['Linux', 'Darwin'], true);
     }
