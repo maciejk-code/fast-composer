@@ -169,14 +169,18 @@ handles dirty checkouts, failed checks, version guessing, and remote checks. Git
 honours `COMPOSER_MAX_PARALLEL_PROCESSES` with a maximum of 8. Set `FAST_COMPOSER_STATUS_GIT=0`
 to disable Git batching.
 
-The ZIP optimization currently targets Composer 2.8.12, 2.9.5 and 2.10.3 on Linux/macOS
+The ZIP optimization currently targets Composer 2.8.12, 2.9.5, 2.10.2 and 2.10.3 on Linux/macOS
 with ext-zip and the Composer phar. Projects with active plugins or root scripts, debug mode,
 and other Composer versions retain native status behaviour. No option is required to enable
 the optimization. Set `FAST_COMPOSER_STATUS=0` for a plain Composer baseline or
 `FAST_COMPOSER_STATUS_TRACE=1` to report which packages actually used the fast path.
 
-Run `bash benchmarks/status.sh` to compare warm, clean status wall times with output and
-exit-code parity. The synthetic fixture is not a measurement of a production project.
+Run `bash benchmarks/status.sh` for warm ZIP status (native, streaming, cached fingerprints)
+and `bash benchmarks/status-git.sh` for warm Git source status (native and parallel).
+Both assert that acceleration was actually used, compare output and exit codes, and report
+median wall times and speedups in the GitHub Actions job summary. The dedicated benchmark
+job runs on Composer 2.10.2 and 2.10.3 using the configured `CI_RUNNER` for Linux.
+These synthetic fixtures are not measurements of a production project.
 
 ## First run
 
