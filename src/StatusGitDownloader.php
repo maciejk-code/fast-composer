@@ -40,6 +40,34 @@ final class StatusGitDownloader extends GitDownloader
         return parent::getLocalChanges($package, $path);
     }
 
+    /**
+     * The native status command guesses the version again whenever this method
+     * returns a reference. If the first native guess already equals the locked
+     * reference, the second guess cannot report a variation in a stable checkout.
+     * This adapter is installed exclusively for status, not install/update.
+     */
+    public function getVcsReference(PackageInterface $package, string $path): ?string
+    {
+        $reference = parent::getVcsReference($package, $path);
+        $locked = match ($package->getInstallationSource()) {
+            'source' => $package->getSourceReference(),
+            'dist' => $package->getDistReference(),
+            default => null,
+        };
+        if (
+            getenv('FAST_COMPOSER_STATUS_VERSION') !== '0'
+            && $reference !== null && $locked !== null && $reference === $locked
+            && preg_match('/^[a-f0-9]{40}$/D', $reference)
+            && !is_link($path) && is_dir($path.'/.git') && !is_link($path.'/.git')
+        ) {
+            if (getenv('FAST_COMPOSER_STATUS_TRACE') === '1') {
+                $this->io->writeError('[fast-composer] skipped duplicate version guess: '.$package->getName());
+            }
+            return null;
+        }
+        return $reference;
+    }
+
     /** @param list<string> $paths */
     private function scan(array $paths): void
     {
