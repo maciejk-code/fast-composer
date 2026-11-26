@@ -6,7 +6,7 @@ BASE="$(mktemp -d)"
 trap 'rm -rf "$BASE"' EXIT
 export COMPOSER_ALLOW_SUPERUSER=1 COMPOSER_NO_INTERACTION=1
 export COMPOSER_HOME="$BASE/home" COMPOSER_CACHE_DIR="$BASE/cache"
-export FAST_COMPOSER_STATUS=1 FAST_COMPOSER_STATUS_GIT=1 FAST_COMPOSER_STATUS_TRACE=0 FAST_COMPOSER_STATUS_VERSION=1
+export FAST_COMPOSER_STATUS=1 FAST_COMPOSER_STATUS_GIT=1 FAST_COMPOSER_STATUS_TRACE=0 FAST_COMPOSER_STATUS_VERSION=1 FAST_COMPOSER_STATUS_REFS=1
 export COMPOSER_MAX_PARALLEL_PROCESSES=8
 COUNT="${BENCH_STATUS_GIT_PACKAGES:-24}"
 FILES="${BENCH_STATUS_GIT_FILES:-100}"
@@ -32,16 +32,19 @@ diff -u "$BASE/standard.out" "$BASE/fast.out"
 diff -u "$BASE/standard.err" "$BASE/fast.err"
 FAST_COMPOSER_STATUS_TRACE=1 php "$ROOT/bin/fast-composer" composer-status --no-ansi >"$BASE/trace.out" 2>"$BASE/trace.err"
 grep -Fx "[fast-composer] parallel Git status proved $COUNT clean checkouts" "$BASE/trace.err"
-guesses="$(grep -cF 'skipped duplicate version guess:' "$BASE/trace.err" || true)"
+guesses="$(grep -cF 'proved locked Git HEAD without version guess:' "$BASE/trace.err" || true)"
 test "$guesses" = "$COUNT"
+test "$(grep -cF 'proved synchronized Git refs:' "$BASE/trace.err")" = "$COUNT"
 for ((i=0;i<RUNS;i++)); do
-  if ((i%2==0)); then modes=(standard local fast); else modes=(fast local standard); fi
+  if ((i%2==0)); then modes=(standard local previous fast); else modes=(fast previous local standard); fi
   for mode in "${modes[@]}"; do
     start="$(php -r 'echo microtime(true);')"
     if [[ "$mode" == fast ]]; then
       php "$ROOT/bin/fast-composer" composer-status --no-ansi >"$BASE/fast.out" 2>"$BASE/fast.err"
+    elif [[ "$mode" == previous ]]; then
+      FAST_COMPOSER_STATUS_REFS=0 php "$ROOT/bin/fast-composer" composer-status --no-ansi >"$BASE/previous.out" 2>"$BASE/previous.err"
     elif [[ "$mode" == local ]]; then
-      FAST_COMPOSER_STATUS_VERSION=0 php "$ROOT/bin/fast-composer" composer-status --no-ansi >"$BASE/local.out" 2>"$BASE/local.err"
+      FAST_COMPOSER_STATUS_REFS=0 FAST_COMPOSER_STATUS_VERSION=0 php "$ROOT/bin/fast-composer" composer-status --no-ansi >"$BASE/local.out" 2>"$BASE/local.err"
     else
       composer status --no-ansi >"$BASE/standard.out" 2>"$BASE/standard.err"
     fi
@@ -52,8 +55,10 @@ for ((i=0;i<RUNS;i++)); do
   diff -u "$BASE/standard.err" "$BASE/fast.err"
   diff -u "$BASE/standard.out" "$BASE/local.out"
   diff -u "$BASE/standard.err" "$BASE/local.err"
+  diff -u "$BASE/standard.out" "$BASE/previous.out"
+  diff -u "$BASE/standard.err" "$BASE/previous.err"
 done
-result="$(php -r 'function median($f){$a=array_map("floatval",file($f));sort($a);$n=count($a);return ($a[intdiv($n-1,2)]+$a[intdiv($n,2)])/2;}$a=median($argv[1]);$b=median($argv[2]);$c=median($argv[3]);printf("Composer: %.3fs | Local status only: %.3fs (%.2fx) | Optimized Git: %.3fs (%.2fx)\n",$a,$c,$a/$c,$b,$a/$b);' "$BASE/standard.times" "$BASE/fast.times" "$BASE/local.times")"
+result="$(php -r 'function median($f){$a=array_map("floatval",file($f));sort($a);$n=count($a);return ($a[intdiv($n-1,2)]+$a[intdiv($n,2)])/2;}$a=median($argv[1]);$b=median($argv[2]);$c=median($argv[3]);$p=median($argv[4]);printf("Composer: %.3fs | Local status only: %.3fs (%.2fx) | Previous optimization: %.3fs (%.2fx) | Optimized Git refs: %.3fs (%.2fx)\n",$a,$c,$a/$c,$p,$a/$p,$b,$a/$b);' "$BASE/standard.times" "$BASE/fast.times" "$BASE/local.times" "$BASE/previous.times")"
 printf '%s\n' "$result"
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   printf '### Git status (%s checkouts, %s files/checkout, %s runs)\n\n%s\n\n' "$COUNT" "$FILES" "$RUNS" "$result" >> "$GITHUB_STEP_SUMMARY"
