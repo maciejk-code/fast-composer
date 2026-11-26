@@ -48,6 +48,9 @@ jobs:
             composer: '2.9.5'
             prefetch: '1'
           - os: ubuntu-24.04
+            composer: '2.10.2'
+            prefetch: '1'
+          - os: ubuntu-24.04
             composer: '2.10.3'
             prefetch: '1'
           - os: macos-latest
@@ -64,8 +67,8 @@ jobs:
           extensions: posix, phar, zip
       - run: composer install --no-interaction --prefer-dist
       - run: php tests/run.php
-      - name: Verify status acceleration on older supported Composer versions
-        if: matrix.composer == '2.8.12' || matrix.composer == '2.9.5'
+      - name: Verify status acceleration (ZIP and Git)
+        if: matrix.composer != '2.6.6'
         run: bash tests/ci.sh status status-git
       - name: Verify accelerated install, not just fallback
         env:
